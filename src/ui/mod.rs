@@ -14,6 +14,8 @@ pub mod components;
 pub mod dashboard;
 pub mod files;
 pub mod jobs;
+pub mod bench;
+pub mod fsck;
 pub mod nodes;
 pub mod transfers;
 pub mod theme;
@@ -40,6 +42,8 @@ pub fn render(f: &mut Frame, app: &App) {
         Panel::Mounts => jobs::render_mounts(f, app, chunks[1]),
         Panel::Jobs => jobs::render(f, app, chunks[1]),
         Panel::Transfers => transfers::render(f, app, chunks[1]),
+        Panel::Fsck => fsck::render(f, app, chunks[1]),
+        Panel::Bench => bench::render(f, app, chunks[1]),
         Panel::Config => jobs::render_config(f, app, chunks[1]),
     }
 
@@ -86,12 +90,24 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(th::BORDER))
-                .title(Span::styled(
-                    " curvine ",
-                    Style::default()
-                        .fg(th::ACCENT)
-                        .add_modifier(Modifier::BOLD),
-                ))
+                // The active panel name lives in the border so it stays
+                // readable even when the tab strip falls back to bare numbers.
+                .title(Line::from(vec![
+                    Span::styled(
+                        " curvine ",
+                        Style::default()
+                            .fg(th::ACCENT)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("· ", Style::default().fg(th::BORDER)),
+                    Span::styled(
+                        app.panel.title(),
+                        Style::default()
+                            .fg(th::ACCENT)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" ", Style::default()),
+                ]))
                 .title_alignment(ratatui::layout::Alignment::Left),
         )
         // Labels already carry their own spacing; ratatui's default 1-cell
@@ -159,7 +175,9 @@ fn render_hints(f: &mut Frame, app: &App, area: Rect) {
     let hints = match app.panel {
         Panel::Files => "↑↓ move ⏎ enter ⌫ up / filter m mkdir p put g get d rm ? help q quit",
         Panel::Transfers => "↑↓ select x cancel c clear p put g get r refresh ? help q quit",
-        _ => "tab panels 1-7 jump p put g get r refresh : cmd ? help q quit",
+        Panel::Fsck => "enter scan  x cancel  f target=cwd  r rescan  ? help  q quit",
+        Panel::Bench => "enter run  p profile  t threads  d duration  r rerun  ? help  q quit",
+        _ => "tab panels 1-9 jump p put g get r refresh : cmd ? help q quit",
     };
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(

@@ -27,6 +27,8 @@ curvine-config = { path = "../curvine/crates/common/curvine-config" }
 curvine-unified-fs = { path = "../curvine/crates/client/curvine-unified-fs" }
 curvine-job-client = { path = "../curvine/crates/client/curvine-job-client" }
 curvine-fs-api = { path = "../curvine/crates/common/curvine-fs-api" }
+curvine-client-core = { path = "../curvine/crates/client/curvine-client-core" }
+curvine-bench = { path = "../curvine/crates/client/curvine-bench" }
 curvine-model = { path = "../curvine/crates/common/curvine-model" }
 curvine-net = { path = "../curvine/crates/core/net" }
 curvine-sys = { path = "../curvine/crates/core/curvine-sys" }

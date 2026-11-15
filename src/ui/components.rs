@@ -71,7 +71,7 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
 
     let rows: Vec<(&str, &str)> = vec![
         ("tab / shift-tab", "switch panel"),
-        ("1 … 7", "jump to panel"),
+        ("1 … 9", "jump to panel"),
         ("j / k  ↑ ↓", "move selection (files)"),
         ("enter / l", "enter directory"),
         ("backspace / h", "parent directory"),
@@ -80,6 +80,8 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
         ("m", "create directory"),
         ("d / D", "delete / delete recursive"),
         ("p / g", "upload / download (put / get)"),
+        ("enter (fsck)", "rescan replicas; f targets browsed dir"),
+        ("enter (bench)", "run benchmark; p/t/d tune profile/threads/duration"),
         ("x", "cancel selected transfer"),
         ("c", "clear finished transfers"),
         ("r", "refresh panel"),

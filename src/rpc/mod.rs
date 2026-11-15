@@ -15,6 +15,8 @@ use curvine_unified_fs::UnifiedFileSystem;
 use crate::config::AppConfig;
 
 pub mod error;
+pub mod bench;
+pub mod fsck;
 pub use error::AppError;
 
 pub type Result<T> = std::result::Result<T, AppError>;
@@ -49,6 +51,12 @@ impl ClusterClient {
     /// config). Kept narrow on purpose.
     pub fn inner(&self) -> &UnifiedFileSystem {
         &self.fs
+    }
+
+    /// The lower-level client, needed for block-location and paged-listing
+    /// RPCs that `UnifiedFileSystem` does not expose directly.
+    pub(crate) fn fs(&self) -> std::sync::Arc<curvine_client_core::file::FsClient> {
+        self.fs.fs_client()
     }
 
     pub async fn open_writer(

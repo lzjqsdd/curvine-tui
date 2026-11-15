@@ -31,6 +31,8 @@ pub enum TaskResult {
     Mounts(Result<Vec<MountRow>, String>),
     Jobs(Result<Vec<JobRow>, String>),
     Config(Result<Vec<ConfigRow>, String>),
+    Fsck(Box<Result<FsckSnapshot, String>>),
+    Bench(Box<Result<BenchSnapshot, String>>),
     TransferProgress {
         id: u64,
         transferred: u64,
@@ -116,6 +118,60 @@ pub struct JobRow {
 pub struct ConfigRow {
     pub key: String,
     pub value: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct FsckSnapshot {
+    pub root: String,
+    pub file_count: usize,
+    pub block_count: usize,
+    pub expected_replicas: usize,
+    pub recorded_replicas: usize,
+    pub available_replicas: usize,
+    pub unavailable_replicas: usize,
+    pub under_replicated_blocks: usize,
+    pub missing_replica_blocks: usize,
+    pub health_ratio: f64,
+    pub warnings: bool,
+    pub errors: Vec<(String, String)>,
+    /// Only unhealthy files are kept; a healthy tree would otherwise hold
+    /// thousands of rows the user never looks at.
+    pub bad_files: Vec<FsckFileRow>,
+    pub elapsed_ms: u128,
+}
+
+#[derive(Debug, Clone)]
+pub struct FsckFileRow {
+    pub path: String,
+    pub len: i64,
+    pub blocks: usize,
+    pub expected: usize,
+    pub available: usize,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BenchSnapshot {
+    pub rows: Vec<BenchRowData>,
+    #[allow(dead_code)]
+    pub temp_path: String,
+    pub elapsed_ms: f64,
+    #[allow(dead_code)]
+    pub started: std::time::Instant,
+}
+
+#[derive(Debug, Clone)]
+pub struct BenchRowData {
+    #[allow(dead_code)]
+    pub group: String,
+    pub op: String,
+    pub item: String,
+    pub value: f64,
+    pub unit: String,
+    pub p50: f64,
+    pub p95: f64,
+    pub p99: f64,
+    pub errors: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

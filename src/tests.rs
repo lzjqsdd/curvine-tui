@@ -10,7 +10,9 @@ use tokio::sync::mpsc;
 use crate::app::{
     join_path, normalize_path, parent_path, App, FilesState, Loadable, Panel, TransferEntry,
 };
-use crate::event::{TransferKind, TransferState};
+use crate::event::{
+    BenchRowData, BenchSnapshot, FsckFileRow, FsckSnapshot, TransferKind, TransferState,
+};
 use crate::transfer::new_cancel_flag;
 use crate::config::{AppConfig, ConfigOverrides};
 use crate::rpc::ClusterClient;
@@ -37,6 +39,12 @@ fn test_app() -> App {
         mounts: Loadable::default(),
         jobs: Loadable::default(),
         config: Loadable::default(),
+        fsck: Loadable::default(),
+        fsck_path: "/".to_string(),
+        fsck_cancel: new_cancel_flag(),
+        bench: Loadable::default(),
+        bench_opts: crate::rpc::bench::BenchOptions::default(),
+        bench_running: None,
         transfers: Vec::new(),
         transfer_selected: 0,
         form: None,
@@ -143,6 +151,70 @@ fn populate_sample_data(app: &mut App) {
         key: "master.worker_timeout_ms".into(),
         value: "60000".into(),
     }]);
+
+    app.fsck.ok(FsckSnapshot {
+        root: "/data".into(),
+        file_count: 120,
+        block_count: 340,
+        expected_replicas: 680,
+        recorded_replicas: 680,
+        available_replicas: 640,
+        unavailable_replicas: 40,
+        under_replicated_blocks: 12,
+        missing_replica_blocks: 1,
+        health_ratio: 640.0 / 680.0,
+        warnings: true,
+        errors: vec![("/data/bad".into(), "permission denied".into())],
+        bad_files: vec![
+            FsckFileRow {
+                path: "/data/bad".into(),
+                len: 0,
+                blocks: 0,
+                expected: 0,
+                available: 0,
+                error: Some("permission denied".into()),
+            },
+            FsckFileRow {
+                path: "/data/events.parquet".into(),
+                len: 4 * 1024 * 1024,
+                blocks: 3,
+                expected: 3,
+                available: 1,
+                error: None,
+            },
+        ],
+        elapsed_ms: 42,
+    });
+
+    app.bench.ok(BenchSnapshot {
+        rows: vec![
+            BenchRowData {
+                group: "Metadata".into(),
+                op: "Create".into(),
+                item: "Create file".into(),
+                value: 2822.85,
+                unit: "ops/s".into(),
+                p50: 0.511,
+                p95: 0.55,
+                p99: 0.588,
+                errors: 0,
+            },
+            BenchRowData {
+                group: "Throughput".into(),
+                op: "ReadBig".into(),
+                item: "Read big file".into(),
+                value: 5003.18,
+                unit: "MiB/s".into(),
+                p50: 12.783,
+                p95: 12.9,
+                p99: 13.0,
+                errors: 2,
+            },
+        ],
+        temp_path: "/__curvine_tui_bench__/abc".into(),
+        elapsed_ms: 54.5,
+        started: std::time::Instant::now(),
+    });
 
     app.transfers = vec![
         TransferEntry {
@@ -308,6 +380,70 @@ fn transfer_ratio_is_clamped_and_zero_safe() {
 #[test]
 fn cancelling_a_running_transfer_sets_terminal_state() {
     let mut app = test_app();
+    app.fsck.ok(FsckSnapshot {
+        root: "/data".into(),
+        file_count: 120,
+        block_count: 340,
+        expected_replicas: 680,
+        recorded_replicas: 680,
+        available_replicas: 640,
+        unavailable_replicas: 40,
+        under_replicated_blocks: 12,
+        missing_replica_blocks: 1,
+        health_ratio: 640.0 / 680.0,
+        warnings: true,
+        errors: vec![("/data/bad".into(), "permission denied".into())],
+        bad_files: vec![
+            FsckFileRow {
+                path: "/data/bad".into(),
+                len: 0,
+                blocks: 0,
+                expected: 0,
+                available: 0,
+                error: Some("permission denied".into()),
+            },
+            FsckFileRow {
+                path: "/data/events.parquet".into(),
+                len: 4 * 1024 * 1024,
+                blocks: 3,
+                expected: 3,
+                available: 1,
+                error: None,
+            },
+        ],
+        elapsed_ms: 42,
+    });
+
+    app.bench.ok(BenchSnapshot {
+        rows: vec![
+            BenchRowData {
+                group: "Metadata".into(),
+                op: "Create".into(),
+                item: "Create file".into(),
+                value: 2822.85,
+                unit: "ops/s".into(),
+                p50: 0.511,
+                p95: 0.55,
+                p99: 0.588,
+                errors: 0,
+            },
+            BenchRowData {
+                group: "Throughput".into(),
+                op: "ReadBig".into(),
+                item: "Read big file".into(),
+                value: 5003.18,
+                unit: "MiB/s".into(),
+                p50: 12.783,
+                p95: 12.9,
+                p99: 13.0,
+                errors: 2,
+            },
+        ],
+        temp_path: "/__curvine_tui_bench__/abc".into(),
+        elapsed_ms: 54.5,
+        started: std::time::Instant::now(),
+    });
+
     app.transfers = vec![TransferEntry {
         id: 9,
         kind: TransferKind::Upload,
@@ -327,6 +463,62 @@ fn cancelling_a_running_transfer_sets_terminal_state() {
 
     assert!(flag.load(std::sync::atomic::Ordering::Relaxed));
     assert_eq!(app.transfers[0].state, TransferState::Cancelled);
+}
+
+#[test]
+fn fsck_panel_shows_verdict_and_unhealthy_files() {
+    let out = render_panel(Panel::Fsck, 120, 30, true);
+    assert!(out.contains("degraded"), "degraded verdict missing:\n{out}");
+    assert!(out.contains("under-replicated"), "issue summary missing");
+    assert!(out.contains("events.parquet"), "unhealthy file missing");
+    assert!(out.contains("1/3"), "replica ratio missing");
+    assert!(out.contains("permission denied"), "scan error missing");
+}
+
+#[test]
+fn fsck_panel_reports_healthy_state() {
+    let mut app = test_app();
+    app.panel = Panel::Fsck;
+    populate_sample_data(&mut app);
+    if let Some(s) = app.fsck.data.as_mut() {
+        s.warnings = false;
+        s.bad_files.clear();
+        s.errors.clear();
+        s.health_ratio = 1.0;
+        s.available_replicas = s.expected_replicas;
+        s.unavailable_replicas = 0;
+        s.under_replicated_blocks = 0;
+        s.missing_replica_blocks = 0;
+    }
+
+    let backend = TestBackend::new(120, 30);
+    let mut term = Terminal::new(backend).unwrap();
+    term.draw(|f| crate::ui::render(f, &app)).unwrap();
+    let text = buffer_text(&term);
+    assert!(text.contains("healthy"), "healthy verdict missing:\n{text}");
+    assert!(text.contains("none"), "expected an explicit 'none' row");
+}
+
+#[test]
+fn bench_panel_renders_metrics_with_units() {
+    let out = render_panel(Panel::Bench, 130, 26, true);
+    assert!(out.contains("ReadBig"), "op missing");
+    assert!(out.contains("MiB/s"), "throughput unit missing");
+    assert!(out.contains("ops/s"), "ops unit missing");
+    assert!(out.contains("2822.85"), "value missing");
+    assert!(out.contains("basic"), "profile knob missing");
+}
+
+fn buffer_text(term: &Terminal<TestBackend>) -> String {
+    let buf = term.backend().buffer().clone();
+    let mut out = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            out.push_str(buf[(x, y)].symbol());
+        }
+        out.push('\n');
+    }
+    out
 }
 
 // ---------------------------------------------------------------- pure helpers

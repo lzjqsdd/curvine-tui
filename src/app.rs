@@ -7,8 +7,8 @@ use tokio::sync::mpsc;
 
 use crate::config::AppConfig;
 use crate::event::{
-    AppEvent, ClusterSnapshot, ConfigRow, FsEntry, JobRow, MountRow, TaskResult, TransferKind,
-    TransferState, WorkerRow,
+    AppEvent, BenchRowData, BenchSnapshot, ClusterSnapshot, ConfigRow, FsEntry, FsckFileRow,
+    FsckSnapshot, JobRow, MountRow, TaskResult, TransferKind, TransferState, WorkerRow,
 };
 use crate::rpc::ClusterClient;
 use crate::transfer::{new_cancel_flag, spawn_transfer, CancelFlag};
@@ -22,17 +22,21 @@ pub enum Panel {
     Mounts,
     Jobs,
     Transfers,
+    Fsck,
+    Bench,
     Config,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 7] = [
+    pub const ALL: [Panel; 9] = [
         Panel::Dashboard,
         Panel::Files,
         Panel::Nodes,
         Panel::Mounts,
         Panel::Jobs,
         Panel::Transfers,
+        Panel::Fsck,
+        Panel::Bench,
         Panel::Config,
     ];
 
@@ -44,6 +48,8 @@ impl Panel {
             Panel::Mounts => "Mounts",
             Panel::Jobs => "Jobs",
             Panel::Transfers => "Transfers",
+            Panel::Fsck => "Fsck",
+            Panel::Bench => "Bench",
             Panel::Config => "Config",
         }
     }
@@ -57,6 +63,8 @@ impl Panel {
             Panel::Mounts => "Mounts",
             Panel::Jobs => "Jobs",
             Panel::Transfers => "Xfer",
+            Panel::Fsck => "Fsck",
+            Panel::Bench => "Bench",
             Panel::Config => "Config",
         }
     }
@@ -264,6 +272,13 @@ pub struct App {
     pub jobs: Loadable<Vec<JobRow>>,
     pub config: Loadable<Vec<ConfigRow>>,
 
+    pub fsck: Loadable<FsckSnapshot>,
+    pub fsck_path: String,
+    pub fsck_cancel: CancelFlag,
+    pub bench: Loadable<BenchSnapshot>,
+    pub bench_opts: crate::rpc::bench::BenchOptions,
+    pub bench_running: Option<std::time::Instant>,
+
     pub transfers: Vec<TransferEntry>,
     pub transfer_selected: usize,
     pub form: Option<TransferForm>,
@@ -294,6 +309,12 @@ impl App {
             mounts: Loadable::default(),
             jobs: Loadable::default(),
             config: Loadable::default(),
+            fsck: Loadable::default(),
+            fsck_path: "/".to_string(),
+            fsck_cancel: new_cancel_flag(),
+            bench: Loadable::default(),
+            bench_opts: crate::rpc::bench::BenchOptions::default(),
+            bench_running: None,
             transfers: Vec::new(),
             transfer_selected: 0,
             form: None,
@@ -449,6 +470,135 @@ impl App {
         });
     }
 
+    /// Kick off a full-tree replica scan.
+    pub fn start_fsck(&mut self) {
+        if self.fsck.loading {
+            return;
+        }
+        // A fresh flag each run so a previous cancel does not poison this scan.
+        self.fsck_cancel = new_cancel_flag();
+        let cancel = self.fsck_cancel.clone();
+        let root = self.fsck_path.clone();
+        self.fsck.begin();
+
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        self.client.runtime().spawn(async move {
+            let started = std::time::Instant::now();
+            let res = client
+                .fsck(
+                    &root,
+                    crate::rpc::fsck::ScanLimits::default(),
+                    &cancel,
+                    |_, _| {},
+                )
+                .await
+                .map(|r| {
+                    let mut bad: Vec<FsckFileRow> = r
+                        .files
+                        .iter()
+                        .filter(|f| {
+                            let unhealthy = f.error.is_some()
+                                || f.blocks.iter().any(|b| {
+                                    b.available_replicas() < f.expected_replicas
+                                });
+                            unhealthy
+                        })
+                        .map(|f| FsckFileRow {
+                            path: f.path.clone(),
+                            len: f.len,
+                            blocks: f.block_count,
+                            expected: f.expected_replicas,
+                            available: f.available_replicas,
+                            error: f.error.clone(),
+                        })
+                        .collect();
+                    // Scan failures are per-file problems too, so surface them
+                    // in the same table rather than only as a count.
+                    for (path, err) in &r.errors {
+                        bad.push(FsckFileRow {
+                            path: path.clone(),
+                            len: 0,
+                            blocks: 0,
+                            expected: 0,
+                            available: 0,
+                            error: Some(err.clone()),
+                        });
+                    }
+                    bad.sort_by(|a, b| a.path.cmp(&b.path));
+
+                    FsckSnapshot {
+                        root: r.root.clone(),
+                        file_count: r.file_count,
+                        block_count: r.block_count,
+                        expected_replicas: r.expected_replicas,
+                        recorded_replicas: r.recorded_replicas,
+                        available_replicas: r.available_replicas,
+                        unavailable_replicas: r.unavailable_replicas,
+                        under_replicated_blocks: r.under_replicated_blocks,
+                        missing_replica_blocks: r.missing_replica_blocks,
+                        health_ratio: r.health_ratio(),
+                        warnings: r.has_warnings(),
+                        errors: r.errors.clone(),
+                        bad_files: bad,
+                        elapsed_ms: started.elapsed().as_millis(),
+                    }
+                })
+                .map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::TaskDone(TaskResult::Fsck(Box::new(res))));
+        });
+        self.set_status(format!("fsck {} …", self.fsck_path), false);
+    }
+
+    pub fn cancel_fsck(&mut self) {
+        if self.fsck.loading {
+            self.fsck_cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.set_status("fsck cancel requested", false);
+        }
+    }
+
+    /// Run the benchmark on a background task.
+    pub fn start_bench(&mut self) {
+        if self.bench_running.is_some() {
+            return;
+        }
+        self.bench.begin();
+        self.bench_running = Some(std::time::Instant::now());
+
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        let opts = self.bench_opts.clone();
+        self.client.runtime().spawn(async move {
+            let res = client
+                .run_bench(&opts)
+                .await
+                .map(|s| BenchSnapshot {
+                    rows: s
+                        .rows
+                        .into_iter()
+                        .map(|r| BenchRowData {
+                            group: r.group,
+                            op: r.op,
+                            item: r.item,
+                            value: r.value,
+                            unit: r.value_unit,
+                            p50: r.p50_ms,
+                            p95: r.p95_ms,
+                            p99: r.p99_ms,
+                            errors: r.errors,
+                        })
+                        .collect(),
+                    temp_path: s.temp_path,
+                    elapsed_ms: s.elapsed_ms,
+                    started: std::time::Instant::now(),
+                })
+                .map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::TaskDone(TaskResult::Bench(Box::new(res))));
+        });
+        self.set_status("bench started …", false);
+    }
+
     pub fn refresh_panel(&mut self) {
         match self.panel {
             Panel::Dashboard => self.refresh_cluster(),
@@ -457,6 +607,8 @@ impl App {
             Panel::Mounts => self.refresh_mounts(),
             Panel::Jobs => self.refresh_jobs(),
             Panel::Transfers => {} // driven by progress events, not polling
+            Panel::Fsck => self.start_fsck(),
+            Panel::Bench => {}
             Panel::Config => self.refresh_config(),
         }
     }
@@ -473,6 +625,9 @@ impl App {
                 match self.panel {
                     Panel::Dashboard | Panel::Nodes => self.refresh_cluster(),
                     Panel::Jobs => self.refresh_jobs(),
+                    // Scan/benchmark are expensive and user-triggered; never
+                    // re-run them on the tick.
+                    Panel::Fsck | Panel::Bench | Panel::Transfers => {}
                     _ => {}
                 }
             }
@@ -575,6 +730,42 @@ impl App {
                     self.refresh_files();
                 }
             }
+            TaskResult::Fsck(res) => match *res {
+                Ok(s) => {
+                    let msg = format!(
+                        "fsck {}: {} files, {} blocks, {:.0}% healthy",
+                        s.root,
+                        s.file_count,
+                        s.block_count,
+                        s.health_ratio * 100.0
+                    );
+                    let warn = s.warnings;
+                    self.fsck.ok(s);
+                    self.set_status(msg, warn);
+                }
+                Err(e) => {
+                    self.fsck.fail(e.clone());
+                    self.set_status(format!("fsck: {e}"), true);
+                }
+            },
+            TaskResult::Bench(res) => {
+                self.bench_running = None;
+                match *res {
+                    Ok(s) => {
+                        let n = s.rows.len();
+                        let elapsed = s.elapsed_ms;
+                        self.bench.ok(s);
+                        self.set_status(
+                            format!("bench complete: {n} metrics in {elapsed:.0}ms"),
+                            false,
+                        );
+                    }
+                    Err(e) => {
+                        self.bench.fail(e.clone());
+                        self.set_status(format!("bench: {e}"), true);
+                    }
+                }
+            }
             TaskResult::Config(res) => match res {
                 Ok(c) => self.config.ok(c),
                 Err(e) => {
@@ -626,7 +817,7 @@ impl App {
                 self.panel = Panel::ALL[(i + Panel::ALL.len() - 1) % Panel::ALL.len()];
                 self.refresh_panel();
             }
-            KeyCode::Char(c @ '1'..='7') => {
+            KeyCode::Char(c @ '1'..='9') => {
                 self.panel = Panel::ALL[(c as usize) - ('1' as usize)];
                 self.refresh_panel();
             }
@@ -637,9 +828,57 @@ impl App {
         }
     }
 
+    fn on_fsck_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter | KeyCode::Char('s') => self.start_fsck(),
+            KeyCode::Char('x') => self.cancel_fsck(),
+            KeyCode::Char('f') => {
+                // Scan the directory currently open in the file browser.
+                self.fsck_path = self.files.cwd.clone();
+                self.set_status(format!("fsck target: {}", self.fsck_path), false);
+            }
+            _ => {}
+        }
+    }
+
+    fn on_bench_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter | KeyCode::Char('b') => self.start_bench(),
+            KeyCode::Char('p') => {
+                self.bench_opts.profile = match self.bench_opts.profile {
+                    curvine_bench::BenchProfile::Basic => curvine_bench::BenchProfile::Deep,
+                    curvine_bench::BenchProfile::Deep => curvine_bench::BenchProfile::Basic,
+                };
+            }
+            KeyCode::Char('t') => {
+                self.bench_opts.threads = match self.bench_opts.threads {
+                    1 => 2,
+                    2 => 4,
+                    4 => 8,
+                    _ => 1,
+                };
+            }
+            KeyCode::Char('d') => {
+                self.bench_opts.duration_ms = match self.bench_opts.duration_ms {
+                    Some(5_000) => Some(10_000),
+                    Some(10_000) => Some(30_000),
+                    Some(30_000) => Some(60_000),
+                    _ => Some(5_000),
+                };
+            }
+            _ => {}
+        }
+    }
+
     fn on_panel_key(&mut self, key: KeyEvent) {
         if self.panel == Panel::Transfers {
             return self.on_transfers_key(key);
+        }
+        if self.panel == Panel::Fsck {
+            return self.on_fsck_key(key);
+        }
+        if self.panel == Panel::Bench {
+            return self.on_bench_key(key);
         }
         if self.panel == Panel::Files {
             match key.code {
@@ -1081,6 +1320,17 @@ impl App {
                 self.panel = Panel::Transfers;
                 self.cancel_selected_transfer();
             }
+            "fsck" => {
+                if let Some(p) = parts.get(1) {
+                    self.fsck_path = normalize_path(p, &self.files.cwd);
+                }
+                self.panel = Panel::Fsck;
+                self.start_fsck();
+            }
+            "bench" => {
+                self.panel = Panel::Bench;
+                self.start_bench();
+            }
             "refresh" | "reload" => self.refresh_panel(),
             "panel" => match parts.get(1).and_then(|p| match *p {
                 "dashboard" => Some(Panel::Dashboard),
@@ -1089,6 +1339,8 @@ impl App {
                 "mounts" => Some(Panel::Mounts),
                 "jobs" => Some(Panel::Jobs),
                 "transfers" | "xfer" => Some(Panel::Transfers),
+                "fsck" => Some(Panel::Fsck),
+                "bench" => Some(Panel::Bench),
                 "config" => Some(Panel::Config),
                 _ => None,
             }) {
@@ -1097,7 +1349,7 @@ impl App {
                     self.refresh_panel();
                 }
                 None => self.set_status(
-                    "usage: panel <dashboard|files|nodes|mounts|jobs|transfers|config>",
+                    "usage: panel <dashboard|files|nodes|mounts|jobs|transfers|fsck|bench|config>",
                     true,
                 ),
             },

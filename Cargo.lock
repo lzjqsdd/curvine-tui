@@ -395,6 +395,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "curvine-bench"
+version = "0.2.2"
+dependencies = [
+ "curvine-core-error",
+ "curvine-fs-api",
+ "curvine-unified-fs",
+ "futures",
+ "rand 0.8.8",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "curvine-client-core"
 version = "0.2.2"
 dependencies = [
@@ -689,6 +702,8 @@ dependencies = [
  "comfy-table",
  "crossbeam-channel",
  "crossterm 0.28.1",
+ "curvine-bench",
+ "curvine-client-core",
  "curvine-config",
  "curvine-error",
  "curvine-fs-api",
