@@ -31,35 +31,6 @@ pub struct ClusterClient {
     fs: Arc<UnifiedFileSystem>,
     job: Arc<JobMasterClient>,
     rt: Arc<Runtime>,
-    /// Kept so the Config panel can render what this process loaded.
-    conf: Arc<curvine_config::ClusterConf>,
-}
-
-/// Flatten nested JSON into dotted `a.b.c` keys, skipping empty containers so
-/// the panel is not padded with `{}` and `[]`.
-fn flatten_json(prefix: &str, value: &serde_json::Value, out: &mut Vec<(String, String)>) {
-    match value {
-        serde_json::Value::Object(map) => {
-            for (k, v) in map {
-                let key = if prefix.is_empty() {
-                    k.clone()
-                } else {
-                    format!("{prefix}.{k}")
-                };
-                flatten_json(&key, v, out);
-            }
-        }
-        serde_json::Value::Array(items) => {
-            if items.is_empty() {
-                return;
-            }
-            for (i, v) in items.iter().enumerate() {
-                flatten_json(&format!("{prefix}[{i}]"), v, out);
-            }
-        }
-        serde_json::Value::String(s) => out.push((prefix.to_string(), s.clone())),
-        other => out.push((prefix.to_string(), other.to_string())),
-    }
 }
 
 impl ClusterClient {
@@ -69,12 +40,7 @@ impl ClusterClient {
             .map_err(AppError::from_fs)?;
         let fs = Arc::new(fs);
         let job = Arc::new(JobMasterClient::new(fs.fs_client()));
-        Ok(Self {
-            fs,
-            job,
-            rt,
-            conf: Arc::new(cfg.cluster.clone()),
-        })
+        Ok(Self { fs, job, rt })
     }
 
     pub fn runtime(&self) -> Arc<Runtime> {
@@ -224,19 +190,6 @@ impl ClusterClient {
     pub async fn umount(&self, cv: &str) -> Result<()> {
         let cv = p(cv)?;
         self.fs.umount(&cv).await.map_err(AppError::from_fs)
-    }
-
-    /// The configuration this process actually loaded (file + env + CLI
-    /// overrides), flattened to `key = value` pairs.
-    ///
-    /// The upstream client exposes no runtime-config RPC, so this is the
-    /// effective *file* configuration rather than live master overrides.
-    pub fn effective_config(&self) -> Result<Vec<(String, String)>> {
-        let value = serde_json::to_value(&*self.conf).map_err(|e| AppError::other(e.to_string()))?;
-        let mut out = Vec::new();
-        flatten_json("", &value, &mut out);
-        out.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(out)
     }
 
     // ---------------------------------------------------------------- job ops

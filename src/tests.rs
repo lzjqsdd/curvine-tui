@@ -40,8 +40,6 @@ fn test_app() -> App {
         mounts: Loadable::default(),
         jobs: Loadable::default(),
         tracked_jobs: Vec::new(),
-        config: Loadable::default(),
-        config_filter: String::new(),
         fsck: Loadable::default(),
         fsck_path: "/".to_string(),
         fsck_cancel: new_cancel_flag(),
@@ -171,11 +169,6 @@ fn populate_sample_data(app: &mut App) {
         progress: 0.82,
         total_bytes: 100 * 1024 * 1024,
         loaded_bytes: 82 * 1024 * 1024,
-    }]);
-
-    app.config.ok(vec![crate::event::ConfigRow {
-        key: "master.worker_timeout_ms".into(),
-        value: "60000".into(),
     }]);
 
     app.fsck.ok(FsckSnapshot {
@@ -342,12 +335,16 @@ fn renders_at_pathological_sizes_without_panicking() {
 fn every_panel_tab_is_reachable_at_narrow_widths() {
     // Regression: ratatui's Tabs adds 1 cell of padding on each side, which
     // used to push the trailing tabs off-screen at 80 columns.
+    // The last panel is the one that used to fall off the end of the strip.
+    let last = *Panel::ALL.last().unwrap();
     for width in [60u16, 80, 100, 120] {
-        let out = render_panel(Panel::Config, width, 30, false);
+        let out = render_panel(last, width, 30, false);
         let header = out.lines().nth(1).unwrap_or_default();
+        // Either the number or the title must be visible for the active panel.
         assert!(
-            header.contains("7"),
-            "selected tab index 7 missing from header at width {width}: {header:?}"
+            header.contains(&format!(" {}", Panel::ALL.len())),
+            "tab index {} missing from header at width {width}: {header:?}",
+            Panel::ALL.len()
         );
     }
 }
@@ -1222,5 +1219,42 @@ fn help_legend_lists_every_dot_tone() {
     for meaning in ["healthy", "in progress", "degraded", "failed", "idle"] {
         assert!(out.contains(meaning), "legend missing {meaning}");
     }
+}
+
+
+#[test]
+fn panel_set_matches_upstream_cli_surface() {
+    // The panel set is intentionally aligned with `curvine-cli` at the pinned
+    // tag. `admin config` has no upstream counterpart and was removed, so this
+    // guards against it creeping back in without a backing CLI command.
+    let titles: Vec<&str> = Panel::ALL.iter().map(|p| p.title()).collect();
+    assert_eq!(
+        titles,
+        vec![
+            "Dashboard", "Files", "Nodes", "Mounts", "Jobs", "Transfers", "Fsck", "Bench"
+        ]
+    );
+    assert!(
+        !titles.contains(&"Config"),
+        "Config panel has no upstream CLI command to back it"
+    );
+}
+
+#[test]
+fn number_keys_cover_every_panel() {
+    // Bound the shortcut range to the enum so a new panel cannot end up
+    // unreachable by number.
+    assert_eq!(Panel::ALL.len(), 8, "update the 1..=8 shortcut range");
+}
+
+#[test]
+fn help_popup_reports_the_real_panel_count() {
+    let mut app = test_app();
+    app.help_visible = true;
+    let out = render_app(&app, 110, 44);
+    assert!(
+        out.contains(&format!("{} panels", Panel::ALL.len())),
+        "help must state the actual panel count:\n{out}"
+    );
 }
 

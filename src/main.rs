@@ -412,14 +412,6 @@ async fn probe(cfg: &AppConfig, client: &ClusterClient) -> i32 {
         }
     }
 
-    match client.effective_config() {
-        Ok(c) => println!("config   : OK ({} effective keys)", c.len()),
-        Err(e) => {
-            println!("config   : FAILED {e}");
-            failed += 1;
-        }
-    }
-
     if failed == 0 {
         println!("\nresult   : all checks passed");
         0

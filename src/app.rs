@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::config::AppConfig;
 use crate::event::{
-    AppEvent, BenchRowData, BenchSnapshot, ClusterSnapshot, ConfigRow, FsEntry, FsckFileRow,
+    AppEvent, BenchRowData, BenchSnapshot, ClusterSnapshot, FsEntry, FsckFileRow,
     FsckSnapshot, JobRow, MountRow, TaskResult, TransferKind, TransferState, WorkerRow,
 };
 use crate::rpc::ClusterClient;
@@ -25,11 +25,10 @@ pub enum Panel {
     Transfers,
     Fsck,
     Bench,
-    Config,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 9] = [
+    pub const ALL: [Panel; 8] = [
         Panel::Dashboard,
         Panel::Files,
         Panel::Nodes,
@@ -38,7 +37,6 @@ impl Panel {
         Panel::Transfers,
         Panel::Fsck,
         Panel::Bench,
-        Panel::Config,
     ];
 
     pub fn title(self) -> &'static str {
@@ -51,7 +49,6 @@ impl Panel {
             Panel::Transfers => "Transfers",
             Panel::Fsck => "Fsck",
             Panel::Bench => "Bench",
-            Panel::Config => "Config",
         }
     }
 
@@ -71,7 +68,6 @@ impl Panel {
             Panel::Transfers => "Xfer",
             Panel::Fsck => "Fsck",
             Panel::Bench => "Bench",
-            Panel::Config => "Config",
         }
     }
 
@@ -447,8 +443,6 @@ pub struct App {
     /// Jobs this session started. The client library has no "list jobs" call,
     /// so this is the only way to show more than a single lookup.
     pub tracked_jobs: Vec<String>,
-    pub config: Loadable<Vec<ConfigRow>>,
-    pub config_filter: String,
 
     pub fsck: Loadable<FsckSnapshot>,
     pub fsck_path: String,
@@ -498,8 +492,6 @@ impl App {
             mounts: Loadable::default(),
             jobs: Loadable::default(),
             tracked_jobs: Vec::new(),
-            config: Loadable::default(),
-            config_filter: String::new(),
             fsck: Loadable::default(),
             fsck_path: "/".to_string(),
             fsck_cancel: new_cancel_flag(),
@@ -666,22 +658,6 @@ impl App {
         });
     }
 
-    pub fn refresh_config(&mut self) {
-        self.config.begin();
-        // No RPC involved: this is the configuration the process already loaded.
-        let res = self
-            .client
-            .effective_config()
-            .map(|pairs| {
-                pairs
-                    .into_iter()
-                    .map(|(key, value)| ConfigRow { key, value })
-                    .collect::<Vec<_>>()
-            })
-            .map_err(|e| e.to_string());
-        let _ = self.tx.send(AppEvent::TaskDone(TaskResult::Config(res)));
-    }
-
     /// Kick off a full-tree replica scan.
     pub fn start_fsck(&mut self) {
         if self.fsck.loading {
@@ -821,7 +797,6 @@ impl App {
             Panel::Transfers => {} // driven by progress events, not polling
             Panel::Fsck => self.start_fsck(),
             Panel::Bench => {}
-            Panel::Config => self.refresh_config(),
         }
     }
 
@@ -904,7 +879,6 @@ impl App {
             || self.cluster.loading
             || self.mounts.loading
             || self.jobs.loading
-            || self.config.loading
             || self.files.load.loading
             || self.bench_running.is_some()
             || self
@@ -1093,13 +1067,6 @@ impl App {
                     }
                 }
             }
-            TaskResult::Config(res) => match res {
-                Ok(c) => self.config.ok(c),
-                Err(e) => {
-                    self.config.fail(e.clone());
-                    self.set_status(format!("config: {e}"), true);
-                }
-            },
             TaskResult::OpDone { label, result } => match result {
                 Ok(msg) => {
                     self.set_status(format!("{label}: {msg}"), false);
@@ -1147,7 +1114,7 @@ impl App {
                 self.panel = Panel::ALL[(i + Panel::ALL.len() - 1) % Panel::ALL.len()];
                 self.refresh_panel();
             }
-            KeyCode::Char(c @ '1'..='9') => {
+            KeyCode::Char(c @ '1'..='8') => {
                 self.panel = Panel::ALL[(c as usize) - ('1' as usize)];
                 self.refresh_panel();
             }
@@ -1484,19 +1451,9 @@ impl App {
         }
     }
 
-    fn on_config_key(&mut self, key: KeyEvent) {
-        if key.code == KeyCode::Char('/') {
-            self.mode = InputMode::Filter;
-            self.config_filter.clear();
-        }
-    }
-
     fn on_panel_key(&mut self, key: KeyEvent) {
         if self.panel == Panel::Transfers {
             return self.on_transfers_key(key);
-        }
-        if self.panel == Panel::Config {
-            return self.on_config_key(key);
         }
         if self.panel == Panel::Nodes {
             return self.on_nodes_key(key);
@@ -1922,33 +1879,20 @@ impl App {
     }
 
     fn on_filter_key(&mut self, key: KeyEvent) {
-        let on_config = self.panel == Panel::Config;
-        let buf = if on_config {
-            &mut self.config_filter
-        } else {
-            &mut self.files.filter
-        };
-
         match key.code {
             KeyCode::Esc => {
                 self.mode = InputMode::Normal;
-                buf.clear();
-                if !on_config {
-                    self.files.selected = 0;
-                }
+                self.files.filter.clear();
+                self.files.selected = 0;
             }
             KeyCode::Enter => self.mode = InputMode::Normal,
             KeyCode::Backspace => {
-                buf.pop();
-                if !on_config {
-                    self.files.selected = 0;
-                }
+                self.files.filter.pop();
+                self.files.selected = 0;
             }
             KeyCode::Char(c) => {
-                buf.push(c);
-                if !on_config {
-                    self.files.selected = 0;
-                }
+                self.files.filter.push(c);
+                self.files.selected = 0;
             }
             _ => {}
         }
@@ -2173,7 +2117,6 @@ impl App {
                 "transfers" | "xfer" => Some(Panel::Transfers),
                 "fsck" => Some(Panel::Fsck),
                 "bench" => Some(Panel::Bench),
-                "config" => Some(Panel::Config),
                 _ => None,
             }) {
                 Some(p) => {
@@ -2181,7 +2124,7 @@ impl App {
                     self.refresh_panel();
                 }
                 None => self.set_status(
-                    "usage: panel <dashboard|files|nodes|mounts|jobs|transfers|fsck|bench|config>",
+                    "usage: panel <dashboard|files|nodes|mounts|jobs|transfers|fsck|bench>",
                     true,
                 ),
             },

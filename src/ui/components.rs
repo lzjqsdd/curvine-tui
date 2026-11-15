@@ -398,7 +398,7 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
 
     let rows: Vec<(&str, &str)> = vec![
         ("tab / shift-tab", "switch panel"),
-        ("1 … 9", "jump to panel"),
+        ("1 … 8", "jump to panel"),
         ("j / k  ↑ ↓", "move selection"),
         ("enter / l", "enter directory / act"),
         ("backspace / h", "parent directory"),
@@ -426,7 +426,11 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
                     .fg(th::ACCENT)
                     .add_modifier(Modifier::BOLD),
             ),
-            Tag::solid("9 panels", Tone::Accent).span(),
+            Tag::solid(
+                format!("{} panels", crate::app::Panel::ALL.len()),
+                Tone::Accent,
+            )
+            .span(),
         ]),
         Line::from(""),
         section("status dots"),

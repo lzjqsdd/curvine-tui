@@ -24,7 +24,6 @@ client and server must be the same version.
 | Transfers | `fs put`, `fs get` | ✅ live progress bars, per-file speed, cancel |
 | Fsck | `fsck` | ✅ recursive replica scan, unhealthy-file drill-down |
 | Bench | `bench` | ✅ metadata + throughput metrics, p50/p95/p99, tunable |
-| Config | `admin config` | ⚠️ effective *file* config (upstream exposes no runtime-config RPC) |
 | Command line | all of the above | ✅ `:` prompt with CLI-style syntax |
 
 Not yet wired: `cat` viewer, `export`, `transfer` submission, `chmod`/`chown`,
@@ -199,19 +198,27 @@ To build against a local curvine checkout instead of the pinned tag, uncomment
 the `[patch."https://github.com/CurvineIO/curvine"]` block at the end of
 `Cargo.toml`.
 
-### What the pinned version cannot do
+### Feature parity with upstream
 
-Compared with the internal snapshot this was developed against, upstream
-`v0.6.0-alpha` has:
+The panel set follows what `curvine-cli` at the pinned tag can actually do:
 
-- **no runtime-config RPC** — the Config panel therefore shows the effective
-  configuration this process loaded (file + env + CLI), not live master
-  overrides
-- **no job listing call** (`list_job_statuses`) — the Jobs panel can only show
-  jobs started in the current session, since that is the only way to learn a
-  job id
+| Command | Where it lives |
+|---|---|
+| `report` | Dashboard |
+| `fs ls/mkdir/rm/mv/put/get` | Files, Transfers |
+| `node` | Nodes |
+| `mount`, `umount` | Mounts |
+| `load`, `load-status`, `cancel-load` | Jobs |
+| `fsck` | Fsck |
+| `bench` | Bench |
 
-Both panels are labelled to say so.
+`admin config` is deliberately absent: upstream has no `admin` command and no
+runtime-config RPC, so there was nothing to back a Config panel with.
+
+Not implemented yet: `snapshot`, `export`, and the `transfer` service commands
+(`list`, `status`, `tasks`, `cancel`, `retry`, `tenants`). The Jobs panel can
+only show jobs started in the current session, because the client library
+exposes no "list load jobs" call — only `get_job_status(id)`.
 
 ## Development
 

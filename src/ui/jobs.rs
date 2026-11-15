@@ -1,4 +1,4 @@
-//! Job list, transfer queue, runtime config — all table-driven with badges.
+//! Job list — table-driven with badges.
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use super::{
-    components::{self, bar_with_pct, kv_line, Tag, Tone},
+    components::{self, bar_with_pct, kv_line, Tone},
     human_bytes, theme as th,
 };
 use crate::app::App;
@@ -153,89 +153,6 @@ fn render_jobs_summary(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(spans)).block(components::panel_block("summary")),
         area,
-    );
-}
-
-// ------------------------------------------------------------------- config
-
-pub fn render_config(f: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(4), Constraint::Length(3)])
-        .split(area);
-
-    let header = Row::new(vec![Cell::from("key"), Cell::from("effective value")]).style(
-        Style::default()
-            .fg(th::ACCENT_DIM)
-            .add_modifier(Modifier::BOLD),
-    );
-
-    let filter = app.config_filter.to_ascii_lowercase();
-    let rows: Vec<Row> = app
-        .config
-        .data
-        .as_ref()
-        .map(|list| {
-            list.iter()
-                .filter(|c| {
-                    filter.is_empty()
-                        || c.key.to_ascii_lowercase().contains(&filter)
-                        || c.value.to_ascii_lowercase().contains(&filter)
-                })
-                .map(|c| {
-                    Row::new(vec![
-                        Cell::from(c.key.clone()).style(Style::default().fg(th::DIR)),
-                        Cell::from(c.value.clone()).style(Style::default().fg(th::TEXT)),
-                    ])
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let title = match (&app.config.data, app.config.loading) {
-        (Some(l), _) => format!(
-            "runtime config — {} keys{}",
-            l.len(),
-            if filter.is_empty() {
-                String::new()
-            } else {
-                format!(" · {} shown", rows.len())
-            }
-        ),
-        (None, true) => format!("runtime config — {} loading", components::live_spinner()),
-        (None, false) => format!(
-            "runtime config — {}",
-            app.config.error.as_deref().unwrap_or("no data")
-        ),
-    };
-
-    let shown = rows.len();
-    let table = Table::new(rows, [Constraint::Percentage(42), Constraint::Min(30)])
-        .header(header)
-        .block(components::panel_block(&title))
-        .column_spacing(1);
-
-    f.render_widget(table, chunks[0]);
-
-    let spans = vec![
-        Span::raw(" "),
-        if filter.is_empty() {
-            Span::styled(
-                "press / to filter keys",
-                Style::default().fg(th::MUTED),
-            )
-        } else {
-            Tag::new(format!("filter {filter}"), Tone::Warn).span()
-        },
-        Span::raw("   "),
-        Span::styled(
-            format!("{shown} entries"),
-            Style::default().fg(th::MUTED),
-        ),
-    ];
-    f.render_widget(
-        Paragraph::new(Line::from(spans)).block(components::panel_block("filter")),
-        chunks[1],
     );
 }
 

@@ -35,7 +35,6 @@ pub enum TaskResult {
     ClusterInfo(Box<Result<ClusterSnapshot, String>>),
     Mounts(Result<Vec<MountRow>, String>),
     Jobs(Result<Vec<JobRow>, String>),
-    Config(Result<Vec<ConfigRow>, String>),
     Fsck(Box<Result<FsckSnapshot, String>>),
     Bench(Box<Result<BenchSnapshot, String>>),
     Describe {
@@ -129,12 +128,6 @@ pub struct JobRow {
     pub progress: f64,
     pub total_bytes: u64,
     pub loaded_bytes: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct ConfigRow {
-    pub key: String,
-    pub value: String,
 }
 
 #[derive(Debug, Clone)]

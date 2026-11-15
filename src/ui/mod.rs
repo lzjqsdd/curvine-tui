@@ -46,7 +46,6 @@ pub fn render(f: &mut Frame, app: &App) {
         Panel::Transfers => transfers::render(f, app, chunks[1]),
         Panel::Fsck => fsck::render(f, app, chunks[1]),
         Panel::Bench => bench::render(f, app, chunks[1]),
-        Panel::Config => jobs::render_config(f, app, chunks[1]),
     }
 
     render_status(f, app, chunks[2]);
@@ -176,14 +175,9 @@ fn render_hints(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
     if app.mode == InputMode::Filter {
-        let buf = if app.panel == Panel::Config {
-            &app.config_filter
-        } else {
-            &app.files.filter
-        };
         let line = Line::from(vec![
             Span::styled(" /", Style::default().fg(th::ACCENT)),
-            Span::raw(buf.clone()),
+            Span::raw(app.files.filter.clone()),
             Span::styled("▏", Style::default().fg(th::ACCENT)),
         ]);
         f.render_widget(Paragraph::new(line), area);
@@ -222,9 +216,8 @@ fn render_hints(f: &mut Frame, app: &App, area: Rect) {
         Panel::Mounts => "↑↓ select  n new mount  u unmount  r refresh  ? help  q quit",
         Panel::Fsck => "enter scan  x cancel  f target=cwd  r rescan  ? help  q quit",
         Panel::Nodes => "↑↓ select  d describe  r refresh  ? help  q quit",
-        Panel::Config => "/ filter keys  r reload  ? help  q quit",
         Panel::Bench => "enter run  p profile  t threads  d duration  r rerun  ? help  q quit",
-        _ => "tab panels 1-9 jump p put g get r refresh : cmd ? help q quit",
+        _ => "tab panels 1-8 jump p put g get r refresh : cmd ? help q quit",
     };
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(

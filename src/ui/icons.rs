@@ -113,6 +113,5 @@ pub fn for_panel(panel: crate::app::Panel) -> &'static str {
         Panel::Transfers => EXCHANGE,
         Panel::Fsck => STETHOSCOPE,
         Panel::Bench => TACHOMETER,
-        Panel::Config => SLIDERS,
     }
 }
