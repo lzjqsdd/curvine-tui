@@ -108,6 +108,7 @@ src/
 ├── ui/components.rs  shared widgets (tags, bars, inputs, popups, help)
 │   ├── fsck.rs    recursive replica scan
 │   └── bench.rs   benchmark harness wrapper
+├── anim.rs        springs, transitions, frame-rate governor
 ├── transfer.rs    streaming upload/download with throttled progress
 ├── ui/
 │   ├── mod.rs     frame layout, shared formatters
@@ -124,6 +125,37 @@ src/
 Long-running RPCs are spawned onto curvine's `Runtime` and report back through a
 single `AppEvent` channel, so the UI never blocks on network I/O. Stale
 responses (e.g. an `ls` that returns after the user navigated away) are dropped.
+
+## Motion
+
+Motion is used only where it explains a change, never for decoration:
+
+| What animates | Why | Implementation |
+|---|---|---|
+| capacity and health gauges | a 5 s refresh that snaps sideways is read as a glitch; a bar that travels is read as a change | critically-damped spring |
+| namespace counters | files/dirs/blocks count up so the eye can see *how much* changed | spring, integer tolerance |
+| transfer progress | progress arrives in bursts; easing makes it monotonic-looking | spring per transfer |
+| dialogs | a 150 ms pop-in signals "this is modal and new" | eased transition, 88%→100% scale |
+| status messages | a transient error stays readable even if you look away | wall-clock hold then colour fade |
+
+Three rules the implementation follows:
+
+- **Springs, not timers.** Anything tracking live data uses a spring, which is
+  interruptible: a new value retargets the same spring mid-flight instead of
+  restarting a tween, so frequent refreshes bend the curve rather than stutter.
+- **First value never animates.** A readout appearing for the first time shows
+  its value; only *changes* travel. Otherwise every panel entry would count up
+  from zero.
+- **Animations must terminate.** Settle thresholds are per-spring (half a unit
+  for integer counters, half a thousandth for ratios) with a 1.5 s watchdog, so a
+  mis-tuned value cannot pin the UI at 60 fps.
+
+The frame rate is governed, not constant: 16 ms while something is moving, 80 ms
+while a spinner or transfer is live, 250 ms when idle. The input thread already
+polls with a timeout, so it doubles as the frame clock — no extra thread, and an
+idle UI measured at 0.0% CPU / ~1.3 MB RSS.
+
+Disable it all with `--no-anim` or `CURVINE_TUI_NO_ANIM=1`.
 
 ## Headless mode
 

@@ -53,10 +53,11 @@ pub fn render(f: &mut Frame, app: &App) {
     render_hints(f, app, chunks[3]);
 
     // Blocking dialogs sit above panel content and below help.
+    let progress = app.anim.dialog_progress();
     if let Some(pending) = &app.confirm {
-        components::render_dialog(f, f.area(), &confirm_to_dialog(pending));
+        components::render_dialog(f, f.area(), &confirm_to_dialog(pending), progress);
     } else if let Some(view) = &app.describe {
-        components::render_dialog(f, f.area(), &mounts::describe_to_dialog(view));
+        components::render_dialog(f, f.area(), &mounts::describe_to_dialog(view), progress);
     }
 
     if app.help_visible {
@@ -142,8 +143,15 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status(f: &mut Frame, app: &App, area: Rect) {
+    // Status messages fade out rather than vanishing, which makes a transient
+    // error readable even if the user looked away for a second.
+    let alpha = app.anim.status_alpha();
+    let faded = |c: ratatui::style::Color| crate::anim::lerp_color(th::MUTED, c, alpha);
     let (text, style) = if app.status_is_error {
-        (app.status.clone(), Style::default().fg(th::ERROR))
+        (
+            app.status.clone(),
+            Style::default().fg(faded(th::ERROR)),
+        )
     } else if app.status.is_empty() {
         let masters = if app.cfg.master_addrs.is_empty() {
             "no masters configured — pass --master-addrs or --conf".to_string()
@@ -152,7 +160,7 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
         };
         (masters, Style::default().fg(th::MUTED))
     } else {
-        (app.status.clone(), Style::default().fg(th::OK))
+        (app.status.clone(), Style::default().fg(faded(th::OK)))
     };
 
     f.render_widget(Paragraph::new(Line::from(Span::styled(text, style))), area);

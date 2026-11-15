@@ -30,7 +30,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     render_counters(f, app, chunks[2]);
 
     if let Some(form) = &app.form {
-        render_form(f, form, area);
+        render_form(f, form, area, app.anim.dialog_progress());
     }
 }
 
@@ -56,7 +56,14 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
         .transfers
         .iter()
         .map(|t| {
-            let pct = t.ratio();
+            // Ease each row; the target is retargeted every frame from the
+            // transfer's real progress.
+            let pct = app
+                .anim
+                .transfers
+                .get(&t.id)
+                .map(|s| s.ratio())
+                .unwrap_or_else(|| t.ratio());
             let (source, target) = match t.kind {
                 TransferKind::Upload => (t.local.clone(), t.remote.clone()),
                 TransferKind::Download => (t.remote.clone(), t.local.clone()),
@@ -205,10 +212,16 @@ fn render_active_gauge(f: &mut Frame, app: &App, area: Rect) {
         }
     );
 
+    let eased = app
+        .anim
+        .transfers
+        .get(&t.id)
+        .map(|s| s.ratio())
+        .unwrap_or_else(|| t.ratio());
     let g = Gauge::default()
         .block(components::panel_block("current"))
         .gauge_style(Style::default().fg(th::ACCENT).add_modifier(Modifier::BOLD))
-        .ratio(t.ratio())
+        .ratio(eased)
         .label(Span::styled(label, Style::default().fg(th::TEXT)));
     f.render_widget(g, area);
 }
@@ -261,8 +274,8 @@ fn render_counters(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn render_form(f: &mut Frame, form: &TransferForm, area: Rect) {
-    let rect = components::centered_rect(66, 44, area);
+fn render_form(f: &mut Frame, form: &TransferForm, area: Rect, progress: f64) {
+    let rect = components::popup_rect(area, "", progress);
     f.render_widget(Clear, rect);
 
     let (title, tone) = match form.kind {

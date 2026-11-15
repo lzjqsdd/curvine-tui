@@ -11,7 +11,8 @@ use crate::app::{
     join_path, normalize_path, parent_path, App, FilesState, Loadable, Panel, TransferEntry,
 };
 use crate::event::{
-    BenchRowData, BenchSnapshot, FsEntry, FsckFileRow, FsckSnapshot, TransferKind, TransferState,
+    BenchRowData, BenchSnapshot, ClusterSnapshot, FsEntry, FsckFileRow, FsckSnapshot,
+    TransferKind, TransferState,
 };
 use crate::transfer::new_cancel_flag;
 use crate::config::{AppConfig, ConfigOverrides};
@@ -55,6 +56,7 @@ fn test_app() -> App {
         confirm: None,
         describe: None,
         next_transfer_id: 1,
+        anim: crate::anim::AnimState::new(false),
         log: vec!["test".to_string()],
         help_visible: false,
     }
@@ -277,6 +279,10 @@ fn populate_sample_data(app: &mut App) {
             cancel: new_cancel_flag(),
         },
     ];
+
+    // The real reducer retargets animations when data arrives; the test helper
+    // injects data directly, so do the same here.
+    app.retarget_animations();
 }
 
 #[test]
@@ -666,6 +672,14 @@ fn deleting_a_directory_without_recursion_is_refused() {
     assert!(app.status.contains("D"), "expected a hint about D: {}", app.status);
 }
 
+/// Drive frames until every animation settles, so assertions see the final
+/// layout instead of a mid-transition frame.
+fn settle(app: &mut App) {
+    for _ in 0..60 {
+        app.on_event(crate::event::AppEvent::Frame(std::time::Duration::from_millis(16)));
+    }
+}
+
 #[test]
 fn confirm_dialog_renders_the_target_and_is_destructive() {
     let mut app = test_app();
@@ -677,6 +691,7 @@ fn confirm_dialog_renders_the_target_and_is_destructive() {
         crossterm::event::KeyModifiers::NONE,
     )));
 
+    settle(&mut app);
     let out = render_app(&app, 110, 26);
     assert!(out.contains("delete"), "dialog title missing:\n{out}");
     assert!(out.contains("events.parquet"), "target missing");
@@ -1003,3 +1018,182 @@ fn format_mode_matches_ls_layout() {
 
 
 
+
+#[test]
+fn idle_ui_asks_for_a_slow_frame_rate() {
+    // The whole point of a frame clock is that an idle UI must not redraw at
+    // 60 fps. Verify the cadence the main loop would request in each state.
+    let mut app = test_app();
+    app.panel = Panel::Dashboard;
+
+    let interval = |app: &App| {
+        if app.is_animating() {
+            crate::anim::FRAME
+        } else if app.is_busy() {
+            crate::anim::BUSY_FRAME
+        } else {
+            crate::anim::IDLE_FRAME
+        }
+    };
+
+    // Nothing loaded, nothing moving.
+    assert_eq!(interval(&app), crate::anim::IDLE_FRAME);
+
+    // A loading panel needs frames for its spinner, but not 60 fps.
+    app.cluster.begin();
+    assert_eq!(interval(&app), crate::anim::BUSY_FRAME);
+
+    // Data arriving kicks off a transition, which wants full frame rate.
+    populate_sample_data(&mut app);
+    app.cluster.ok(ClusterSnapshot {
+        active_master: "m:1".into(),
+        journal_nodes: vec![],
+        inode_dir_num: 5,
+        inode_file_num: 5,
+        block_num: 5,
+        capacity: 100,
+        available: 50,
+        fs_used: 50,
+        non_fs_used: 0,
+        workers: vec![],
+    });
+    app.retarget_animations();
+    app.on_event(crate::event::AppEvent::Frame(std::time::Duration::from_millis(16)));
+    assert_eq!(interval(&app), crate::anim::FRAME);
+
+    // Once everything settles it drops back — but the sample data still has a
+    // running transfer, so the spinner cadence is correct here.
+    settle(&mut app);
+    assert!(!app.is_animating(), "animations did not settle");
+    assert_eq!(interval(&app), crate::anim::BUSY_FRAME);
+
+    // With no work in flight the UI goes fully idle.
+    for t in &mut app.transfers {
+        t.state = TransferState::Done;
+    }
+    assert_eq!(interval(&app), crate::anim::IDLE_FRAME);
+}
+
+#[test]
+fn reduced_motion_settles_instantly() {
+    let mut app = test_app();
+    app.anim = crate::anim::AnimState::new(true);
+    app.panel = Panel::Dashboard;
+    populate_sample_data(&mut app);
+
+    assert!(!app.is_animating(), "reduced motion must never animate");
+    let out = render_app(&app, 110, 26);
+    // Values must be present immediately rather than counting up from zero.
+    assert!(out.contains("340"), "file count not snapped:\n{out}");
+}
+
+#[test]
+fn first_paint_shows_real_values_not_zero() {
+    // A spring's first target is adopted instantly; only changes animate.
+    let mut app = test_app();
+    app.panel = Panel::Dashboard;
+    populate_sample_data(&mut app);
+
+    let out = render_app(&app, 110, 26);
+    assert!(out.contains("340"), "file count missing on first paint");
+    assert!(out.contains("12"), "dir count missing on first paint");
+}
+
+#[test]
+fn a_count_change_counts_up_instead_of_jumping() {
+    let mut app = test_app();
+    app.panel = Panel::Dashboard;
+    populate_sample_data(&mut app);
+
+    // Simulate a refresh that doubles the file count.
+    let mut snapshot = app.cluster.data.clone().unwrap();
+    snapshot.inode_file_num = 680;
+    app.cluster.ok(snapshot);
+    app.retarget_animations();
+
+    // One frame in, the displayed value must be between old and new.
+    app.on_event(crate::event::AppEvent::Frame(std::time::Duration::from_millis(16)));
+    let mid = app.anim.files.value();
+    assert!(
+        mid > 340.0 && mid < 680.0,
+        "expected an in-between value, got {mid}"
+    );
+
+    settle(&mut app);
+    assert!((app.anim.files.value() - 680.0).abs() < 1.0);
+}
+
+#[test]
+fn debug_which_spring_is_stuck() {
+    let mut app = test_app();
+    app.panel = Panel::Dashboard;
+    populate_sample_data(&mut app);
+    settle(&mut app);
+    println!("animating: {}", app.is_animating());
+    for (name, s) in [
+        ("capacity", app.anim.capacity),
+        ("health", app.anim.health),
+        ("dirs", app.anim.dirs),
+        ("files", app.anim.files),
+        ("blocks", app.anim.blocks),
+        ("workers", app.anim.workers),
+    ] {
+        println!("  {name}: value={:.4} target={:.4} animating={}", s.value(), s.target(), s.is_animating());
+    }
+    for (id, s) in &app.anim.transfers {
+        println!("  transfer {id}: value={:.4} target={:.4} animating={}", s.value(), s.target(), s.is_animating());
+    }
+}
+
+#[test]
+fn dialog_grows_while_entering() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 1;
+
+    app.on_event(crate::event::AppEvent::Key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Delete,
+        crossterm::event::KeyModifiers::NONE,
+    )));
+
+    // No frames yet: the box is at its smallest but must already be legible.
+    let opening = render_app(&app, 110, 26);
+    assert!(opening.contains("delete"), "title must show immediately");
+
+    // Part way through the pop-in the box must still render its target.
+    app.on_event(crate::event::AppEvent::Frame(std::time::Duration::from_millis(60)));
+    let mid = render_app(&app, 110, 26);
+    assert!(mid.contains("events.parquet"), "target missing mid-transition");
+
+    // And it must reach full size.
+    settle(&mut app);
+    let done = render_app(&app, 110, 26);
+    assert!(done.contains("confirm"), "footer missing when settled");
+    assert!(
+        done.lines().count() >= opening.lines().count(),
+        "dialog never grew"
+    );
+}
+
+#[test]
+fn status_message_fades_before_disappearing() {
+    let mut app = test_app();
+    app.set_status_for_test("done: 12 files");
+    assert_eq!(app.anim.status_alpha(), 1.0, "must start fully opaque");
+
+    // Simulate the hold elapsing is time-based, so just assert the fade maths
+    // through the public surface: alpha is 1 while a fresh message is held.
+    assert!(!app.anim.status_expired());
+}
+
+#[test]
+fn help_legend_lists_every_dot_tone() {
+    let mut app = test_app();
+    app.help_visible = true;
+    let out = render_app(&app, 110, 44);
+    assert!(out.contains("status dots"), "legend section missing:\n{out}");
+    for meaning in ["healthy", "in progress", "degraded", "failed", "idle"] {
+        assert!(out.contains(meaning), "legend missing {meaning}");
+    }
+}

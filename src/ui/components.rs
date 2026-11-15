@@ -13,6 +13,7 @@ use ratatui::{
 };
 
 use super::theme as th;
+use crate::anim::lerp_color;
 
 // ------------------------------------------------------------------- chrome
 
@@ -390,16 +391,6 @@ pub fn choice_line(label: &str, value: &str, focused: bool) -> Line<'static> {
     ])
 }
 
-/// Centered popup frame with a title; returns the inner rect for body content.
-pub fn popup(f: &mut Frame, area: Rect, title: &str) -> Rect {
-    let rect = centered_rect(66, 56, area);
-    f.render_widget(Clear, rect);
-    let block = panel_block(title);
-    let inner = block.inner(rect);
-    f.render_widget(block, rect);
-    inner
-}
-
 // ------------------------------------------------------------------- help
 
 pub fn render_help_popup(f: &mut Frame, area: Rect) {
@@ -582,14 +573,22 @@ impl Dialog {
     }
 }
 
-/// Render a dialog centred in `area`. Returns the rect it occupied so callers
-/// can layer further content if needed.
-pub fn render_dialog(f: &mut Frame, area: Rect, dlg: &Dialog) -> Rect {
-    let width = dlg.preferred_width().min(area.width.saturating_sub(2)).max(20);
-    let height = dlg
+/// Render a dialog centred in `area`.
+///
+/// `progress` is the 0..=1 pop-in value: the box grows the last ~12% and its
+/// border fades in. Content is drawn as soon as there is room, because a dialog
+/// whose text appears late reads as lag rather than as motion.
+pub fn render_dialog(f: &mut Frame, area: Rect, dlg: &Dialog, progress: f64) -> Rect {
+    let target_w = dlg.preferred_width().min(area.width.saturating_sub(2)).max(20);
+    let target_h = dlg
         .preferred_height()
         .min(area.height.saturating_sub(2))
         .max(6);
+
+    let p = progress.clamp(0.0, 1.0);
+    let scale = 0.88 + 0.12 * p;
+    let width = ((target_w as f64 * scale).round() as u16).max(16).min(target_w);
+    let height = ((target_h as f64 * scale).round() as u16).max(5).min(target_h);
     let rect = centre(width, height, area);
     f.render_widget(Clear, rect);
 
@@ -645,15 +644,19 @@ pub fn render_dialog(f: &mut Frame, area: Rect, dlg: &Dialog) -> Rect {
         ]));
     }
 
-    let border_tone = if dlg.destructive { th::ERROR } else { th::BORDER };
+    // Border and title fade in from the panel border colour, so the box appears
+    // to materialise rather than pop.
+    let border_target = if dlg.destructive { th::ERROR } else { th::ACCENT };
+    let border = lerp_color(th::BORDER, border_target, p);
+    let title_color = lerp_color(th::BORDER, border_target, p);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_tone))
+        .border_style(Style::default().fg(border))
         .title(Span::styled(
             format!(" {} ", dlg.title),
             Style::default()
-                .fg(if dlg.destructive { th::ERROR } else { th::ACCENT })
+                .fg(title_color)
                 .add_modifier(Modifier::BOLD),
         ));
 
@@ -665,6 +668,16 @@ pub fn render_dialog(f: &mut Frame, area: Rect, dlg: &Dialog) -> Rect {
         rect,
     );
     rect
+}
+
+/// Centred popup rect that scales with `progress`, for form dialogs that do not
+/// use the `Dialog` struct. Widths are fixed fractions of the screen.
+pub fn popup_rect(area: Rect, _title: &str, progress: f64) -> Rect {
+    let p = progress.clamp(0.0, 1.0);
+    let scale = 0.88 + 0.12 * p;
+    let w = ((area.width as f64 * 0.66 * scale).round() as u16).max(24);
+    let h = ((area.height as f64 * 0.56 * scale).round() as u16).max(8);
+    centre(w, h, area)
 }
 
 /// Exact-size rect centred in `area`, clamped to the available space.

@@ -11,6 +11,7 @@ use crate::event::{
     FsckSnapshot, JobRow, MountRow, TaskResult, TransferKind, TransferState, WorkerRow,
 };
 use crate::rpc::ClusterClient;
+use crate::anim::AnimState;
 use crate::transfer::{new_cancel_flag, spawn_transfer, CancelFlag};
 use curvine_runtime::runtime::RpcRuntime;
 
@@ -465,6 +466,9 @@ pub struct App {
     pub describe: Option<DescribeView>,
     pub(crate) next_transfer_id: u64,
 
+    /// Every time-based value the UI renders. Advanced once per frame.
+    pub anim: AnimState,
+
     pub log: Vec<String>,
     pub help_visible: bool,
 }
@@ -474,6 +478,7 @@ impl App {
         cfg: AppConfig,
         client: ClusterClient,
         tx: mpsc::UnboundedSender<AppEvent>,
+        reduced_motion: bool,
     ) -> Self {
         let mut app = Self {
             cfg,
@@ -506,6 +511,7 @@ impl App {
             confirm: None,
             describe: None,
             next_transfer_id: 1,
+            anim: AnimState::new(reduced_motion),
             log: Vec::new(),
             help_visible: false,
         };
@@ -527,6 +533,11 @@ impl App {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_status_for_test(&mut self, msg: impl Into<String>) {
+        self.set_status(msg, false);
+    }
+
     fn set_status(&mut self, msg: impl Into<String>, is_error: bool) {
         let msg = msg.into();
         self.log(if is_error {
@@ -536,6 +547,7 @@ impl App {
         });
         self.status = msg;
         self.status_is_error = is_error;
+        self.anim.mark_status();
     }
 
     // ------------------------------------------------------------- refreshers
@@ -820,6 +832,7 @@ impl App {
             AppEvent::Key(k) => self.on_key(k),
             AppEvent::Resize(_, _) => {}
             AppEvent::Mouse(_) => {}
+            AppEvent::Frame(dt) => self.on_frame(dt),
             AppEvent::Tick => {
                 // Auto-refresh the active data panel if stale.
                 match self.panel {
@@ -835,7 +848,85 @@ impl App {
         }
     }
 
+    /// Point every spring at the value currently held in state.
+    ///
+    /// Springs are interruptible, so retargeting mid-flight bends the curve
+    /// instead of restarting it. Called when data changes and once per frame;
+    /// `set_target` with an unchanged value is a no-op.
+    pub fn retarget_animations(&mut self) {
+        if let Some(c) = &self.cluster.data {
+            self.anim
+                .capacity
+                .set_target(crate::ui::ratio(c.fs_used, c.capacity.max(1)));
+            self.anim.dirs.set_target(c.inode_dir_num as f64);
+            self.anim.files.set_target(c.inode_file_num as f64);
+            self.anim.blocks.set_target(c.block_num as f64);
+            self.anim.workers.set_target(c.workers.len() as f64);
+        }
+        if let Some(f) = &self.fsck.data {
+            self.anim.health.set_target(f.health_ratio);
+        }
+
+        let ids: Vec<u64> = self.transfers.iter().map(|t| t.id).collect();
+        for t in &self.transfers {
+            let target = if t.total > 0 {
+                (t.transferred as f64 / t.total as f64).clamp(0.0, 1.0)
+            } else {
+                t.ratio()
+            };
+            self.anim.transfer(t.id, target).set_target(target);
+        }
+        self.anim.prune_transfers(&ids);
+    }
+
+    /// Advance animation state. Called once per frame.
+    fn on_frame(&mut self, dt: std::time::Duration) {
+        self.retarget_animations();
+
+        // A dialog that is closing should stop its transition.
+        if self.confirm.is_none()
+            && self.describe.is_none()
+            && self.mount_form.is_none()
+            && self.form.is_none()
+        {
+            self.anim.close_dialog();
+        }
+
+        self.anim.step(dt);
+
+        if self.anim.status_expired() {
+            self.status.clear();
+            self.status_is_error = false;
+            self.anim.clear_status_mark();
+        }
+    }
+
+    /// True when something on screen is still moving.
+    pub fn is_animating(&self) -> bool {
+        self.anim.is_animating()
+    }
+
+    /// True when a spinner or progress bar needs periodic redraws.
+    pub fn is_busy(&self) -> bool {
+        self.fsck.loading
+            || self.cluster.loading
+            || self.mounts.loading
+            || self.jobs.loading
+            || self.config.loading
+            || self.files.load.loading
+            || self.bench_running.is_some()
+            || self
+                .transfers
+                .iter()
+                .any(|t| matches!(t.state, TransferState::Queued | TransferState::Running))
+    }
+
     fn on_task(&mut self, t: TaskResult) {
+        self.apply_task(t);
+        self.retarget_animations();
+    }
+
+    fn apply_task(&mut self, t: TaskResult) {
         match t {
             TaskResult::FsListing { path, result } => {
                 if path != self.files.cwd {
@@ -1140,6 +1231,7 @@ impl App {
                 .push((format!("storage {kind}"), crate::ui::human_bytes(*size)));
         }
 
+        self.anim.open_dialog(format!("describe:{}", view.subject));
         self.describe = Some(view);
         self.mode = InputMode::Describe;
     }
@@ -1157,6 +1249,7 @@ impl App {
             }
             KeyCode::Char('n') => {
                 let cwd = self.files.cwd.clone();
+                self.anim.open_dialog("form:mount");
                 self.mount_form = Some(MountForm::new(&cwd));
                 self.mode = InputMode::Mount;
             }
@@ -1165,6 +1258,7 @@ impl App {
                 {
                     let path = m.cv_path.clone();
                     let ufs = m.ufs_path.clone();
+                    self.anim.open_dialog(format!("confirm:umount:{path}"));
                     self.confirm = Some(PendingConfirm {
                         action: PendingAction::Umount { path: path.clone() },
                         title: "unmount".to_string(),
@@ -1505,6 +1599,7 @@ impl App {
             return;
         }
         let cwd = self.files.cwd.clone();
+        self.anim.open_dialog(format!("form:transfer:{kind:?}"));
         self.form = Some(match kind {
             TransferKind::Upload => TransferForm::upload(&cwd),
             TransferKind::Download => TransferForm::download(&cwd),
@@ -1684,6 +1779,7 @@ impl App {
             "this removes the file and all of its block replicas.".to_string()
         });
 
+        self.anim.open_dialog(format!("confirm:{path}"));
         self.confirm = Some(PendingConfirm {
             action: PendingAction::DeleteFile {
                 path: path.clone(),
@@ -1702,6 +1798,7 @@ impl App {
             return;
         };
         let path = join_path(&self.files.cwd, &entry.name);
+        self.anim.open_dialog(format!("confirm:free:{path}"));
         self.confirm = Some(PendingConfirm {
             action: PendingAction::FreeFile {
                 path: path.clone(),
@@ -1760,6 +1857,7 @@ impl App {
 
         if entry.is_dir {
             view.rows.push(("kind".into(), "directory".to_string()));
+            self.anim.open_dialog(format!("describe:{}", view.subject));
             self.describe = Some(view);
             self.mode = InputMode::Describe;
             return;
@@ -1769,6 +1867,7 @@ impl App {
         // never appears frozen while the block locations are fetched.
         view.rows.push(("blocks".into(), "loading…".to_string()));
         view.loading = true;
+        self.anim.open_dialog(format!("describe:{}", view.subject));
         self.describe = Some(view);
         self.mode = InputMode::Describe;
 
@@ -2039,6 +2138,7 @@ impl App {
                 } else {
                     // No arguments: open the form instead of erroring.
                     let cwd = self.files.cwd.clone();
+                    self.anim.open_dialog("form:mount");
                     self.mount_form = Some(MountForm::new(&cwd));
                     self.mode = InputMode::Mount;
                     self.panel = Panel::Mounts;

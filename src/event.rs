@@ -1,6 +1,8 @@
 //! Event plumbing: terminal input on one side, background task results on the
 //! other. Both funnel into a single `AppEvent` channel consumed by the main loop.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, MouseEvent};
@@ -15,6 +17,9 @@ pub enum AppEvent {
     Resize(u16, u16),
     /// Periodic tick driving auto-refresh.
     Tick,
+    /// Frame timer: carries the elapsed time since the last frame so springs
+    /// can be integrated against real time rather than an assumed rate.
+    Frame(Duration),
     /// A background job finished. The payload is panel-specific state.
     TaskDone(TaskResult),
 }
@@ -243,11 +248,32 @@ impl TransferState {
     }
 }
 
+/// Shared frame interval in milliseconds.
+///
+/// The input thread already polls crossterm with a timeout, so it doubles as the
+/// frame clock: the main loop simply changes this value to say how often it
+/// wants to be woken. That avoids a second thread and, more importantly, avoids
+/// redrawing at 60 fps while the UI is idle.
+pub type FrameClock = Arc<AtomicU64>;
+
+pub fn new_frame_clock() -> FrameClock {
+    Arc::new(AtomicU64::new(crate::anim::IDLE_FRAME.as_millis() as u64))
+}
+
+pub fn set_frame_interval(clock: &FrameClock, interval: Duration) {
+    clock.store(interval.as_millis().max(1) as u64, Ordering::Relaxed);
+}
+
 /// Spawns the crossterm reader thread. Returns immediately.
-pub fn spawn_input_thread(tx: mpsc::UnboundedSender<AppEvent>) {
+///
+/// When no input arrives within the frame interval the thread emits
+/// `AppEvent::Frame`, which is what drives animation.
+pub fn spawn_input_thread(tx: mpsc::UnboundedSender<AppEvent>, clock: FrameClock) {
     std::thread::spawn(move || {
+        let mut last = std::time::Instant::now();
         loop {
-            match event::poll(Duration::from_millis(250)) {
+            let interval = Duration::from_millis(clock.load(Ordering::Relaxed).max(1));
+            match event::poll(interval) {
                 Ok(true) => match event::read() {
                     Ok(CrosstermEvent::Key(k)) => {
                         if tx.send(AppEvent::Key(k)).is_err() {
@@ -267,7 +293,15 @@ pub fn spawn_input_thread(tx: mpsc::UnboundedSender<AppEvent>) {
                     Ok(_) => {}
                     Err(_) => break,
                 },
-                Ok(false) => {}
+                Ok(false) => {
+                    // No input within the interval: this is a frame boundary.
+                    let now = std::time::Instant::now();
+                    let dt = now.duration_since(last);
+                    last = now;
+                    if tx.send(AppEvent::Frame(dt)).is_err() {
+                        break;
+                    }
+                }
                 Err(_) => break,
             }
         }

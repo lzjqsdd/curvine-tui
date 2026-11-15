@@ -33,7 +33,10 @@ fn render_cluster(f: &mut Frame, app: &App, area: Rect) {
 
     match (&app.cluster.data, app.cluster.loading) {
         (Some(c), _) => {
-            let cap_ratio = ratio(c.fs_used, c.capacity.max(1));
+            // The spring follows the real ratio; the raw value is used for the
+            // text so the numbers never lag behind the data.
+            let cap_ratio = app.anim.capacity.ratio();
+            let _ = ratio(c.fs_used, c.capacity.max(1));
 
             lines.push(section("capacity"));
             lines.push(Line::from(vec![
@@ -76,9 +79,26 @@ fn render_cluster(f: &mut Frame, app: &App, area: Rect) {
 
             lines.push(Line::from(""));
             lines.push(section("namespace"));
-            lines.push(count_line(icons::DIR, "directories", c.inode_dir_num, Tone::Info));
-            lines.push(count_line(icons::FILE, "files", c.inode_file_num, Tone::Info));
-            lines.push(count_line(icons::CUBES, "blocks", c.block_num, Tone::Neutral));
+            // Counters animate from their previous value; the label prints the
+            // rounded spring, so a refresh counts up instead of snapping.
+            lines.push(count_line(
+                icons::DIR,
+                "directories",
+                app.anim.dirs.value().round() as i64,
+                Tone::Info,
+            ));
+            lines.push(count_line(
+                icons::FILE,
+                "files",
+                app.anim.files.value().round() as i64,
+                Tone::Info,
+            ));
+            lines.push(count_line(
+                icons::CUBES,
+                "blocks",
+                app.anim.blocks.value().round() as i64,
+                Tone::Neutral,
+            ));
 
             lines.push(Line::from(""));
             lines.push(section("members"));
@@ -122,7 +142,7 @@ fn render_cluster(f: &mut Frame, app: &App, area: Rect) {
                 components::dot(worker_tone),
                 Span::raw(" "),
                 Span::styled(
-                    format!("{} live", c.workers.len()),
+                    format!("{:.0} live", app.anim.workers.value()),
                     Style::default().fg(th::TEXT),
                 ),
             ]));

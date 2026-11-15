@@ -2,6 +2,7 @@
 
 #![recursion_limit = "256"]
 
+mod anim;
 mod app;
 mod config;
 mod event;
@@ -40,6 +41,10 @@ struct Args {
     /// Auto-refresh interval in seconds
     #[arg(long, default_value_t = 5)]
     refresh: u64,
+
+    /// Disable animated transitions (also honoured via CURVINE_TUI_NO_ANIM=1)
+    #[arg(long)]
+    no_anim: bool,
 
     /// Connect, dump cluster state to stdout, and exit. Useful for checking
     /// connectivity without a terminal.
@@ -99,11 +104,14 @@ fn main() -> anyhow::Result<()> {
     }
 
     let (tx, mut rx) = mpsc::unbounded_channel();
+    let clock = event::new_frame_clock();
 
-    event::spawn_input_thread(tx.clone());
+    event::spawn_input_thread(tx.clone(), clock.clone());
     event::spawn_tick_thread(tx.clone(), Duration::from_secs(args.refresh.max(1)));
 
-    let mut app = App::new(cfg, client, tx.clone());
+    let reduced = args.no_anim
+        || std::env::var("CURVINE_TUI_NO_ANIM").as_deref() == Ok("1");
+    let mut app = App::new(cfg, client, tx.clone(), reduced);
 
     // Terminal setup / teardown guard.
     enable_raw_mode()?;
@@ -113,7 +121,7 @@ fn main() -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
-    let result = run(&mut terminal, &mut app, &mut rx);
+    let result = run(&mut terminal, &mut app, &mut rx, &clock);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -420,11 +428,26 @@ fn run(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
     rx: &mut mpsc::UnboundedReceiver<event::AppEvent>,
+    clock: &event::FrameClock,
 ) -> anyhow::Result<()> {
     loop {
         terminal.draw(|f| ui::render(f, app))?;
 
-        // Block for the next event, but redraw on resize/keystroke promptly.
+        // Ask for a frame rate matching what is actually happening: 60 fps only
+        // while something is in motion, a low rate for spinners, and near-idle
+        // otherwise. The input thread uses this as its poll timeout, so an idle
+        // UI costs almost no wakeups.
+        event::set_frame_interval(
+            clock,
+            if app.is_animating() {
+                anim::FRAME
+            } else if app.is_busy() {
+                anim::BUSY_FRAME
+            } else {
+                anim::IDLE_FRAME
+            },
+        );
+
         match rx.blocking_recv() {
             Some(evt) => app.on_event(evt),
             None => break,
