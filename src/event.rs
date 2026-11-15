@@ -127,8 +127,8 @@ pub struct JobRow {
     pub source: String,
     pub target: String,
     pub progress: f64,
-    pub total_files: u64,
-    pub completed: u64,
+    pub total_bytes: u64,
+    pub loaded_bytes: u64,
 }
 
 #[derive(Debug, Clone)]

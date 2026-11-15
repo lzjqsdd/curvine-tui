@@ -8,6 +8,10 @@ Built on [ratatui](https://github.com/ratatui/ratatui) + crossterm, with the
 data layer wired directly into curvine's own crates (`curvine-unified-fs`,
 `curvine-job-client`) so behaviour stays aligned with the CLI.
 
+Dependencies are pinned to the upstream tag `v0.6.0-alpha`, so a plain clone
+builds after `cargo build`. See [Version coupling](#version-coupling) — the
+client and server must be the same version.
+
 ## Status
 
 | Panel | Backing CLI commands | State |
@@ -16,11 +20,11 @@ data layer wired directly into curvine's own crates (`curvine-unified-fs`,
 | Files | `fs ls`, `mkdir`, `rm`, `mv` | ✅ browse, filter, icons, replica factor, describe, confirmed delete |
 | Nodes | `node` | ✅ per-worker endpoint, disk occupancy, describe |
 | Mounts | `mount`, `umount` | ✅ mount form, unmount confirm, mode/storage badges |
-| Jobs | `load-list`, `load-status`, `transfer` | ✅ list + progress (cancel pending) |
+| Jobs | `load-list`, `load-status`, `transfer` | ⚠️ jobs started by this session only |
 | Transfers | `fs put`, `fs get` | ✅ live progress bars, per-file speed, cancel |
 | Fsck | `fsck` | ✅ recursive replica scan, unhealthy-file drill-down |
 | Bench | `bench` | ✅ metadata + throughput metrics, p50/p95/p99, tunable |
-| Config | `admin config` | ✅ runtime config viewer |
+| Config | `admin config` | ⚠️ effective *file* config (upstream exposes no runtime-config RPC) |
 | Command line | all of the above | ✅ `:` prompt with CLI-style syntax |
 
 Not yet wired: `cat` viewer, `export`, `transfer` submission, `chmod`/`chown`,
@@ -169,14 +173,45 @@ The same code paths are reachable without a terminal, which is also how the
 integration tests validate them:
 
 ```bash
-curvine-tui --probe                                  # connectivity + cluster dump
-CURVINE_TUI_PROBE_MOUNT='ufs|cv' curvine-tui --probe  # mount
+curvine-tui --probe                                   # connectivity + cluster dump
+CURVINE_TUI_PROBE_MOUNT='ufs|cv' curvine-tui --probe   # mount
 CURVINE_TUI_PROBE_UMOUNT='/cv' curvine-tui --probe    # unmount
 curvine-tui --put /local/file.bin /remote/file.bin   # streaming upload
 curvine-tui --get /remote/file.bin /local/file.bin   # streaming download
 ```
 
 `--probe` exits non-zero if any check fails, so it works as a health check.
+
+## Version coupling
+
+The TUI links curvine's protobuf bindings, so **the client and the cluster must
+be the same version**. A newer server sends fields the older bindings cannot
+decode; the failure looks like:
+
+```
+cluster  : FAILED invalid wire type ... WorkerInfoProto.worker_session_id
+```
+
+The Fsck panel reports this honestly rather than showing a green 100% — a
+non-empty file with no readable block locations is counted as an error.
+
+To build against a local curvine checkout instead of the pinned tag, uncomment
+the `[patch."https://github.com/CurvineIO/curvine"]` block at the end of
+`Cargo.toml`.
+
+### What the pinned version cannot do
+
+Compared with the internal snapshot this was developed against, upstream
+`v0.6.0-alpha` has:
+
+- **no runtime-config RPC** — the Config panel therefore shows the effective
+  configuration this process loaded (file + env + CLI), not live master
+  overrides
+- **no job listing call** (`list_job_statuses`) — the Jobs panel can only show
+  jobs started in the current session, since that is the only way to learn a
+  job id
+
+Both panels are labelled to say so.
 
 ## Development
 

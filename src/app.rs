@@ -444,6 +444,9 @@ pub struct App {
     pub cluster: Loadable<ClusterSnapshot>,
     pub mounts: Loadable<Vec<MountRow>>,
     pub jobs: Loadable<Vec<JobRow>>,
+    /// Jobs this session started. The client library has no "list jobs" call,
+    /// so this is the only way to show more than a single lookup.
+    pub tracked_jobs: Vec<String>,
     pub config: Loadable<Vec<ConfigRow>>,
     pub config_filter: String,
 
@@ -494,6 +497,7 @@ impl App {
             cluster: Loadable::default(),
             mounts: Loadable::default(),
             jobs: Loadable::default(),
+            tracked_jobs: Vec::new(),
             config: Loadable::default(),
             config_filter: String::new(),
             fsck: Loadable::default(),
@@ -651,9 +655,10 @@ impl App {
         self.jobs.begin();
         let client = self.client.clone();
         let tx = self.tx.clone();
+        let ids = self.tracked_jobs.clone();
         self.client.runtime().spawn(async move {
             let res = client
-                .jobs(50)
+                .jobs(&ids)
                 .await
                 .map(|list| list.into_iter().map(to_job_row).collect::<Vec<_>>())
                 .map_err(|e| e.to_string());
@@ -663,23 +668,18 @@ impl App {
 
     pub fn refresh_config(&mut self) {
         self.config.begin();
-        let client = self.client.clone();
-        let tx = self.tx.clone();
-        self.client.runtime().spawn(async move {
-            let res = client
-                .runtime_config(None)
-                .await
-                .map(|list| {
-                    list.into_iter()
-                        .map(|e| ConfigRow {
-                            key: e.key,
-                            value: e.effective_value_json,
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .map_err(|e| e.to_string());
-            let _ = tx.send(AppEvent::TaskDone(TaskResult::Config(res)));
-        });
+        // No RPC involved: this is the configuration the process already loaded.
+        let res = self
+            .client
+            .effective_config()
+            .map(|pairs| {
+                pairs
+                    .into_iter()
+                    .map(|(key, value)| ConfigRow { key, value })
+                    .collect::<Vec<_>>()
+            })
+            .map_err(|e| e.to_string());
+        let _ = self.tx.send(AppEvent::TaskDone(TaskResult::Config(res)));
     }
 
     /// Kick off a full-tree replica scan.
@@ -2054,6 +2054,9 @@ impl App {
                     let msg = format!("submitted load for {path}");
                     let client = self.client.clone();
                     let tx = self.tx.clone();
+                    if !self.tracked_jobs.contains(&path) {
+                        self.tracked_jobs.push(path.clone());
+                    }
                     self.spawn_call(async move {
                         let res = client
                             .submit_load(&path)
@@ -2236,24 +2239,23 @@ fn to_fs_entry(s: curvine_model::FileStatus) -> FsEntry {
 }
 
 fn to_job_row(j: curvine_model::JobStatus) -> JobRow {
-    let progress = j.progress_string(false);
+    // v0.6 reports byte progress (loaded_size / total_size) rather than file
+    // counters, so the row shows bytes and derives the ratio from them.
+    let total = j.progress.total_size.max(0) as u64;
+    let loaded = j.progress.loaded_size.max(0) as u64;
     JobRow {
         job_id: j.job_id,
         state: format!("{:?}", j.state),
         source: j.source_path,
         target: j.target_path,
-        progress: parse_progress_pct(&progress),
-        total_files: j.total_files,
-        completed: j.completed_files,
+        progress: if total > 0 {
+            (loaded as f64 / total as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        },
+        total_bytes: total,
+        loaded_bytes: loaded,
     }
-}
-
-fn parse_progress_pct(s: &str) -> f64 {
-    s.split('%')
-        .next()
-        .and_then(|n| n.trim().parse::<f64>().ok())
-        .map(|v| (v / 100.0).clamp(0.0, 1.0))
-        .unwrap_or(0.0)
 }
 
 pub fn join_path(base: &str, name: &str) -> String {

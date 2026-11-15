@@ -397,6 +397,7 @@ dependencies = [
 [[package]]
 name = "curvine-bench"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "curvine-core-error",
  "curvine-fs-api",
@@ -410,6 +411,7 @@ dependencies = [
 [[package]]
 name = "curvine-client-core"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "async-stream",
  "bytes",
@@ -447,6 +449,7 @@ dependencies = [
 [[package]]
 name = "curvine-common-macros"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -456,6 +459,7 @@ dependencies = [
 [[package]]
 name = "curvine-config"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "clap",
  "curvine-common-macros",
@@ -473,13 +477,13 @@ dependencies = [
  "log",
  "regex",
  "serde",
- "serde_json",
  "toml",
 ]
 
 [[package]]
 name = "curvine-core-error"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "bincode",
  "bytes",
@@ -490,6 +494,7 @@ dependencies = [
 [[package]]
 name = "curvine-error"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "curvine-core-error",
  "curvine-io",
@@ -502,6 +507,7 @@ dependencies = [
 [[package]]
 name = "curvine-fault"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "linkme",
  "parking_lot",
@@ -513,6 +519,7 @@ dependencies = [
 [[package]]
 name = "curvine-fs-api"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "async-stream",
  "bytes",
@@ -535,6 +542,7 @@ dependencies = [
 [[package]]
 name = "curvine-io"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "bytes",
  "curvine-core-error",
@@ -549,6 +557,7 @@ dependencies = [
 [[package]]
 name = "curvine-job-client"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "bincode",
  "curvine-client-core",
@@ -570,6 +579,7 @@ dependencies = [
 [[package]]
 name = "curvine-metrics"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "curvine-core-error",
  "dashmap",
@@ -581,6 +591,7 @@ dependencies = [
 [[package]]
 name = "curvine-model"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "bincode",
  "bitflags",
@@ -597,12 +608,12 @@ dependencies = [
  "num_enum",
  "prost",
  "serde",
- "serde_json",
 ]
 
 [[package]]
 name = "curvine-net"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "curvine-core-error",
  "curvine-io",
@@ -615,6 +626,7 @@ dependencies = [
 [[package]]
 name = "curvine-proto"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "prost",
  "prost-build",
@@ -624,6 +636,7 @@ dependencies = [
 [[package]]
 name = "curvine-rpc"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "bytes",
  "curvine-core-error",
@@ -645,6 +658,7 @@ dependencies = [
 [[package]]
 name = "curvine-runtime"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "bincode",
  "chrono",
@@ -677,6 +691,7 @@ dependencies = [
 [[package]]
 name = "curvine-sys"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "bytes",
  "curvine-runtime",
@@ -726,6 +741,7 @@ dependencies = [
 [[package]]
 name = "curvine-unified-fs"
 version = "0.2.2"
+source = "git+https://github.com/CurvineIO/curvine?tag=v0.6.0-alpha#44c4103febc3a21faefb814db5a58b3babaf29b9"
 dependencies = [
  "bytes",
  "curvine-client-core",

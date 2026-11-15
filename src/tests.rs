@@ -39,6 +39,7 @@ fn test_app() -> App {
         cluster: Loadable::default(),
         mounts: Loadable::default(),
         jobs: Loadable::default(),
+        tracked_jobs: Vec::new(),
         config: Loadable::default(),
         config_filter: String::new(),
         fsck: Loadable::default(),
@@ -168,8 +169,8 @@ fn populate_sample_data(app: &mut App) {
         source: "s3://bucket/data/a".into(),
         target: "/data/a".into(),
         progress: 0.82,
-        total_files: 100,
-        completed: 82,
+        total_bytes: 100 * 1024 * 1024,
+        loaded_bytes: 82 * 1024 * 1024,
     }]);
 
     app.config.ok(vec![crate::event::ConfigRow {

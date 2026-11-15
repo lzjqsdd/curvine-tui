@@ -23,17 +23,20 @@ crossbeam-channel = "0.5"
 clap = { version = "4.5", features = ["derive", "env"] }
 
 # --- curvine data layer ---
-curvine-config = { path = "../curvine/crates/common/curvine-config" }
-curvine-unified-fs = { path = "../curvine/crates/client/curvine-unified-fs" }
-curvine-job-client = { path = "../curvine/crates/client/curvine-job-client" }
-curvine-fs-api = { path = "../curvine/crates/common/curvine-fs-api" }
-curvine-client-core = { path = "../curvine/crates/client/curvine-client-core" }
-curvine-bench = { path = "../curvine/crates/client/curvine-bench" }
-curvine-model = { path = "../curvine/crates/common/curvine-model" }
-curvine-net = { path = "../curvine/crates/core/net" }
-curvine-sys = { path = "../curvine/crates/core/curvine-sys" }
-curvine-runtime = { path = "../curvine/crates/core/runtime" }
-curvine-error = { path = "../curvine/crates/common/curvine-error" }
+#
+# Pinned to a release tag rather than a path so the crate builds from a plain
+# clone. Bumping this is the only place the upstream version is recorded.
+curvine-config = { git = "https://github.com/CurvineIO/curvine", tag = "v0.6.0-alpha" }
+curvine-unified-fs = { git = "https://github.com/CurvineIO/curvine", tag = "v0.6.0-alpha" }
+curvine-job-client = { git = "https://github.com/CurvineIO/curvine", tag = "v0.6.0-alpha" }
+curvine-fs-api = { git = "https://github.com/CurvineIO/curvine", tag = "v0.6.0-alpha" }
+curvine-model = { git = "https://github.com/CurvineIO/curvine", tag = "v0.6.0-alpha" }
+curvine-client-core = { git = "https://github.com/CurvineIO/curvine", tag = "v0.6.0-alpha" }
+curvine-bench = { git = "https://github.com/CurvineIO/curvine", tag = "v0.6.0-alpha" }
+curvine-net = { git = "https://github.com/CurvineIO/curvine", tag = "v0.6.0-alpha" }
+curvine-runtime = { git = "https://github.com/CurvineIO/curvine", tag = "v0.6.0-alpha" }
+curvine-error = { git = "https://github.com/CurvineIO/curvine", tag = "v0.6.0-alpha" }
+curvine-sys = { git = "https://github.com/CurvineIO/curvine", tag = "v0.6.0-alpha" }
 
 # --- misc ---
 anyhow = "1.0"
@@ -45,3 +48,25 @@ bytes = "1.9"
 comfy-table = "7.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# --- building against a local curvine checkout ---
+#
+# The dependencies above are pinned to an upstream tag so a plain `git clone`
+# builds. While hacking on curvine itself you probably want your working copy
+# instead; uncomment the block below and point the paths at your checkout.
+#
+# Note: the client and server must be the same version — a newer server reports
+# fields the older protobuf bindings cannot decode.
+#
+# [patch."https://github.com/CurvineIO/curvine"]
+# curvine-config = { path = "../curvine/crates/common/curvine-config" }
+# curvine-unified-fs = { path = "../curvine/crates/client/curvine-unified-fs" }
+# curvine-job-client = { path = "../curvine/crates/client/curvine-job-client" }
+# curvine-fs-api = { path = "../curvine/crates/common/curvine-fs-api" }
+# curvine-model = { path = "../curvine/crates/common/curvine-model" }
+# curvine-client-core = { path = "../curvine/crates/client/curvine-client-core" }
+# curvine-bench = { path = "../curvine/crates/client/curvine-bench" }
+# curvine-net = { path = "../curvine/crates/core/net" }
+# curvine-runtime = { path = "../curvine/crates/core/runtime" }
+# curvine-error = { path = "../curvine/crates/common/curvine-error" }
+# curvine-sys = { path = "../curvine/crates/core/curvine-sys" }

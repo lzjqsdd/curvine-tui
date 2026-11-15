@@ -69,10 +69,14 @@ impl FsckReport {
     }
 
     /// Fraction of expected replicas that are actually readable, 0..=1.
-    /// Returns 1.0 for an empty scan so an untouched tree shows healthy.
+    ///
+    /// Returns 1.0 for an empty scan so an untouched tree shows healthy — but
+    /// only when nothing failed. A scan that produced errors and observed no
+    /// replicas at all is not "100% healthy"; it is unreadable, and reporting a
+    /// perfect ratio would contradict the error list right next to it.
     pub fn health_ratio(&self) -> f64 {
         if self.expected_replicas == 0 {
-            return 1.0;
+            return if self.errors.is_empty() { 1.0 } else { 0.0 };
         }
         (self.available_replicas as f64 / self.expected_replicas as f64).clamp(0.0, 1.0)
     }
@@ -80,8 +84,9 @@ impl FsckReport {
     fn observe(&mut self, health: FileHealth) {
         let expected = health.expected_replicas;
 
-        if let Some(_err) = &health.error {
+        if let Some(err) = &health.error {
             self.file_count += 1;
+            self.errors.push((health.path.clone(), err.clone()));
             return;
         }
 
@@ -245,6 +250,23 @@ impl ClusterClient {
 
         match self.fs().get_file_block_details(&path).await {
             Ok(details) => {
+                // A non-empty regular file with no block locations means the
+                // server could not tell us where the data lives (protocol skew,
+                // or metadata damage). Reporting that as "healthy" — which is
+                // what a zero-block aggregate looks like — would be a lie.
+                if details.blocks.is_empty() && details.status.len > 0 {
+                    return FileHealth {
+                        path: details.status.path,
+                        len: details.status.len,
+                        expected_replicas: expected,
+                        block_count: 0,
+                        available_replicas: 0,
+                        recorded_replicas: 0,
+                        blocks: Vec::new(),
+                        error: Some("no block locations reported for a non-empty file".into()),
+                    };
+                }
+
                 let mut blocks: Vec<BlockHealth> = details
                     .blocks
                     .into_iter()
@@ -296,5 +318,59 @@ impl ClusterClient {
                 error: Some(e.to_string()),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report(expected: usize, available: usize, errors: usize) -> FsckReport {
+        FsckReport {
+            expected_replicas: expected,
+            available_replicas: available,
+            errors: (0..errors).map(|i| (format!("/f{i}"), "boom".to_string())).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn empty_clean_scan_is_healthy() {
+        assert_eq!(report(0, 0, 0).health_ratio(), 1.0);
+        assert!(!report(0, 0, 0).has_warnings());
+    }
+
+    #[test]
+    fn empty_scan_with_errors_is_not_healthy() {
+        // This is the failure mode that matters: a scan that could read no
+        // replica data at all must not render as a green 100%.
+        let r = report(0, 0, 3);
+        assert_eq!(r.health_ratio(), 0.0);
+        assert!(r.has_warnings());
+    }
+
+    #[test]
+    fn partial_availability_scales() {
+        assert_eq!(report(10, 5, 0).health_ratio(), 0.5);
+        assert_eq!(report(10, 10, 0).health_ratio(), 1.0);
+        assert_eq!(report(10, 0, 0).health_ratio(), 0.0);
+    }
+
+    #[test]
+    fn observed_errors_are_recorded() {
+        let mut r = FsckReport::default();
+        r.observe(FileHealth {
+            path: "/x".into(),
+            len: 10,
+            expected_replicas: 2,
+            block_count: 0,
+            available_replicas: 0,
+            recorded_replicas: 0,
+            blocks: Vec::new(),
+            error: Some("no block locations".into()),
+        });
+        assert_eq!(r.file_count, 1);
+        assert_eq!(r.errors.len(), 1);
+        assert!(r.has_warnings());
     }
 }

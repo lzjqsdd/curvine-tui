@@ -8,9 +8,7 @@ use std::sync::Arc;
 
 use curvine_fs_api::{FileSystem, Path};
 use curvine_job_client::JobMasterClient;
-use curvine_model::{
-    FileStatus, FilesystemInfo, JobStatus, MountInfo, MountOptions, RuntimeConfigEntry,
-};
+use curvine_model::{FileStatus, FilesystemInfo, JobStatus, MountInfo, MountOptions};
 use curvine_runtime::runtime::Runtime;
 use curvine_unified_fs::UnifiedFileSystem;
 
@@ -33,6 +31,35 @@ pub struct ClusterClient {
     fs: Arc<UnifiedFileSystem>,
     job: Arc<JobMasterClient>,
     rt: Arc<Runtime>,
+    /// Kept so the Config panel can render what this process loaded.
+    conf: Arc<curvine_config::ClusterConf>,
+}
+
+/// Flatten nested JSON into dotted `a.b.c` keys, skipping empty containers so
+/// the panel is not padded with `{}` and `[]`.
+fn flatten_json(prefix: &str, value: &serde_json::Value, out: &mut Vec<(String, String)>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                let key = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{prefix}.{k}")
+                };
+                flatten_json(&key, v, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            if items.is_empty() {
+                return;
+            }
+            for (i, v) in items.iter().enumerate() {
+                flatten_json(&format!("{prefix}[{i}]"), v, out);
+            }
+        }
+        serde_json::Value::String(s) => out.push((prefix.to_string(), s.clone())),
+        other => out.push((prefix.to_string(), other.to_string())),
+    }
 }
 
 impl ClusterClient {
@@ -42,7 +69,12 @@ impl ClusterClient {
             .map_err(AppError::from_fs)?;
         let fs = Arc::new(fs);
         let job = Arc::new(JobMasterClient::new(fs.fs_client()));
-        Ok(Self { fs, job, rt })
+        Ok(Self {
+            fs,
+            job,
+            rt,
+            conf: Arc::new(cfg.cluster.clone()),
+        })
     }
 
     pub fn runtime(&self) -> Arc<Runtime> {
@@ -194,28 +226,40 @@ impl ClusterClient {
         self.fs.umount(&cv).await.map_err(AppError::from_fs)
     }
 
-    pub async fn runtime_config(&self, key: Option<&str>) -> Result<Vec<RuntimeConfigEntry>> {
-        self.fs
-            .get_runtime_config(key)
-            .await
-            .map_err(AppError::from_fs)
+    /// The configuration this process actually loaded (file + env + CLI
+    /// overrides), flattened to `key = value` pairs.
+    ///
+    /// The upstream client exposes no runtime-config RPC, so this is the
+    /// effective *file* configuration rather than live master overrides.
+    pub fn effective_config(&self) -> Result<Vec<(String, String)>> {
+        let value = serde_json::to_value(&*self.conf).map_err(|e| AppError::other(e.to_string()))?;
+        let mut out = Vec::new();
+        flatten_json("", &value, &mut out);
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
     }
 
     // ---------------------------------------------------------------- job ops
 
-    pub async fn jobs(&self, limit: usize) -> Result<Vec<JobStatus>> {
-        self.job
-            .list_job_statuses(None, limit, true)
-            .await
-            .map_err(AppError::from_fs)
-    }
-
-    #[allow(dead_code)]
-    pub async fn job_status(&self, id: &str) -> Result<JobStatus> {
-        self.job
-            .get_job_status(id)
-            .await
-            .map_err(AppError::from_fs)
+    /// Look up jobs by id.
+    ///
+    /// The client library exposes no "list jobs" call, so the UI can only show
+    /// jobs it started itself — everything submitted through this session is
+    /// remembered and re-queried here.
+    pub async fn jobs(&self, ids: &[String]) -> Result<Vec<JobStatus>> {
+        let mut out = Vec::new();
+        for id in ids {
+            match self.job.get_job_status(id).await {
+                Ok(status) => out.push(status),
+                // A job the master has forgotten is not an error for the others.
+                Err(e) => {
+                    if ids.len() == 1 {
+                        return Err(AppError::from_fs(e));
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 
     #[allow(dead_code)]

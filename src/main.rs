@@ -254,8 +254,12 @@ async fn probe(cfg: &AppConfig, client: &ClusterClient) -> i32 {
         }
     }
 
-    match client.jobs(10).await {
-        Ok(j) => println!("jobs     : OK ({} entries)", j.len()),
+    match client.jobs(&[]).await {
+        Ok(j) => println!(
+            "jobs     : OK ({} entries; the client exposes no job listing, so \
+             only jobs started by this process would appear)",
+            j.len()
+        ),
         Err(e) => {
             println!("jobs     : FAILED {e}");
             failed += 1;
@@ -284,8 +288,9 @@ async fn probe(cfg: &AppConfig, client: &ClusterClient) -> i32 {
                     r.under_replicated_blocks
                 );
                 println!("  health        : {:.1}%", r.health_ratio() * 100.0);
-                if r.has_warnings() {
-                    println!("  WARN          : {} errors", r.errors.len());
+                println!("  warnings      : {}", r.has_warnings());
+                for (path, err) in r.errors.iter().take(3) {
+                    println!("  ERROR         : {path} — {err}");
                 }
             }
             Err(e) => {
@@ -407,8 +412,8 @@ async fn probe(cfg: &AppConfig, client: &ClusterClient) -> i32 {
         }
     }
 
-    match client.runtime_config(None).await {
-        Ok(c) => println!("config   : OK ({} keys)", c.len()),
+    match client.effective_config() {
+        Ok(c) => println!("config   : OK ({} effective keys)", c.len()),
         Err(e) => {
             println!("config   : FAILED {e}");
             failed += 1;

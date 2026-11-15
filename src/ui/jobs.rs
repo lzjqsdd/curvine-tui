@@ -35,7 +35,7 @@ fn render_jobs_table(f: &mut Frame, app: &App, area: Rect) {
         Cell::from("progress"),
     ];
     if wide {
-        header_cells.push(Cell::from("files"));
+        header_cells.push(Cell::from("bytes"));
     }
     header_cells.push(Cell::from("source"));
     header_cells.push(Cell::from("target"));
@@ -62,7 +62,8 @@ fn render_jobs_table(f: &mut Frame, app: &App, area: Rect) {
                     if wide {
                         cells.push(Cell::from(format!(
                             "{}/{}",
-                            j.completed, j.total_files
+                            human_bytes(j.loaded_bytes as i64),
+                            human_bytes(j.total_bytes as i64)
                         )));
                     }
                     cells.push(Cell::from(j.source.clone()));
