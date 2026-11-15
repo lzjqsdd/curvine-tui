@@ -54,6 +54,11 @@ impl Panel {
         }
     }
 
+    /// Nerd Font glyph shown in the tab strip.
+    pub fn icon(self) -> &'static str {
+        crate::ui::icons::for_panel(self)
+    }
+
     /// Compact label used when the tab bar cannot fit full titles.
     pub fn short_title(self) -> &'static str {
         match self {
@@ -85,8 +90,10 @@ pub enum InputMode {
     Transfer,
     /// Mount form popup.
     Mount,
-    /// Unmount confirmation popup.
+    /// Destructive-action confirmation popup.
     Confirm,
+    /// Read-only detail popup.
+    Describe,
 }
 
 /// Per-panel load state, so we can render spinners and errors uniformly.
@@ -286,6 +293,50 @@ impl MountStorage {
     }
 }
 
+/// A destructive action waiting on confirmation. Holding the intent (instead of
+/// a pre-rendered message) means the confirm handler cannot fire a different
+/// action than the one the user was shown.
+#[derive(Debug, Clone)]
+pub enum PendingAction {
+    DeleteFile { path: String, recursive: bool },
+    Umount { path: String },
+    FreeFile { path: String, recursive: bool },
+}
+
+pub struct PendingConfirm {
+    pub action: PendingAction,
+    pub title: String,
+    pub target: String,
+    pub lines: Vec<String>,
+}
+
+/// Read-only detail popup. Rows are pre-formatted so the renderer stays dumb.
+#[derive(Debug, Clone, Default)]
+pub struct DescribeView {
+    pub title: String,
+    /// What this popup is about (a path or a worker address). Async responses
+    /// are matched against it so a late reply cannot populate a newer popup.
+    pub subject: String,
+    pub headline: Option<(String, String)>,
+    pub rows: Vec<(String, String)>,
+    /// Per-worker block distribution, already aggregated and sorted.
+    pub worker_blocks: Vec<WorkerBlocks>,
+    /// Flat block list, sorted by offset.
+    pub blocks: Vec<crate::event::BlockRow>,
+    pub loading: bool,
+}
+
+/// Blocks held by one worker, used for the distribution view.
+#[derive(Debug, Clone)]
+pub struct WorkerBlocks {
+    pub worker: String,
+    pub block_ids: Vec<String>,
+    pub bytes: i64,
+    /// Number of that worker's replicas that are actually readable.
+    pub available: usize,
+    pub total: usize,
+}
+
 /// Fields of the mount form, in tab order.
 pub const MOUNT_FIELDS: usize = 7;
 
@@ -407,7 +458,11 @@ pub struct App {
     pub form: Option<TransferForm>,
     pub mount_selected: usize,
     pub mount_form: Option<MountForm>,
-    pub umount_confirm: Option<String>,
+    pub node_selected: usize,
+    /// Blocking confirmation for a destructive action.
+    pub confirm: Option<PendingConfirm>,
+    /// Read-only detail popup for the current selection.
+    pub describe: Option<DescribeView>,
     pub(crate) next_transfer_id: u64,
 
     pub log: Vec<String>,
@@ -447,7 +502,9 @@ impl App {
             form: None,
             mount_selected: 0,
             mount_form: None,
-            umount_confirm: None,
+            node_selected: 0,
+            confirm: None,
+            describe: None,
             next_transfer_id: 1,
             log: Vec::new(),
             help_visible: false,
@@ -523,7 +580,15 @@ impl App {
                         .live_workers
                         .iter()
                         .map(|w| WorkerRow {
-                            address: format!("{}", w.address),
+                            // Display on WorkerAddress is the verbose
+                            // "worker_id = .., addr = host/ip:port" form; build
+                            // the endpoint explicitly instead.
+                            address: format!("{}:{}", w.address.ip_addr, w.address.rpc_port),
+                            ip: w.address.ip_addr.clone(),
+                            hostname: w.address.hostname.clone(),
+                            rpc_port: w.address.rpc_port,
+                            web_port: w.address.web_port,
+                            worker_id: w.address.worker_id,
                             status: format!("{:?}", w.status),
                             capacity: w.capacity,
                             available: w.available,
@@ -531,6 +596,11 @@ impl App {
                             block_num: w.block_num,
                             weight: w.weight,
                             version: w.software_version.clone(),
+                            storage: w
+                                .storage_map
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.capacity))
+                                .collect(),
                         })
                         .collect(),
                 })
@@ -860,6 +930,50 @@ impl App {
                     self.refresh_files();
                 }
             }
+            TaskResult::Describe { path, blocks } => {
+                // Ignore a response for a popup the user already closed.
+                let mut closed = false;
+                if let Some(view) = self.describe.as_mut() {
+                    if view.subject != path {
+                        closed = true;
+                    } else {
+                        view.loading = false;
+                        match blocks {
+                            Ok(rows) => {
+                                view.blocks = rows;
+                                view.worker_blocks = aggregate_by_worker(&view.blocks);
+                                let distinct = view
+                                    .blocks
+                                    .iter()
+                                    .map(|b| b.block_id.as_str())
+                                    .collect::<std::collections::BTreeSet<_>>()
+                                    .len();
+                                if let Some(slot) =
+                                    view.rows.iter_mut().find(|(k, _)| k == "blocks")
+                                {
+                                    slot.1 = format!(
+                                        "{} across {} workers",
+                                        distinct,
+                                        view.worker_blocks.len()
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                if let Some(slot) =
+                                    view.rows.iter_mut().find(|(k, _)| k == "blocks")
+                                {
+                                    slot.1 = format!("unavailable: {e}");
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    closed = true;
+                }
+                if closed {
+                    self.log(format!("describe {path}: popup closed, response dropped"));
+                }
+            }
             TaskResult::Fsck(res) => match *res {
                 Ok(s) => {
                     let msg = format!(
@@ -920,6 +1034,7 @@ impl App {
             InputMode::Transfer => return self.on_form_key(key),
             InputMode::Mount => return self.on_mount_key(key),
             InputMode::Confirm => return self.on_confirm_key(key),
+            InputMode::Describe => return self.on_describe_key(key),
             InputMode::Normal => {}
         }
 
@@ -960,6 +1075,75 @@ impl App {
         }
     }
 
+    fn on_nodes_key(&mut self, key: KeyEvent) {
+        let n = self.cluster.data.as_ref().map(|c| c.workers.len()).unwrap_or(0);
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                if n > 0 {
+                    self.node_selected = (self.node_selected + 1).min(n - 1);
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.node_selected = self.node_selected.saturating_sub(1);
+            }
+            KeyCode::Char('d') | KeyCode::Enter => self.node_describe(),
+            _ => {}
+        }
+    }
+
+    /// `d` on the Nodes panel — full worker detail.
+    pub(crate) fn node_describe(&mut self) {
+        let Some(w) = self
+            .cluster
+            .data
+            .as_ref()
+            .and_then(|c| c.workers.get(self.node_selected))
+            .cloned()
+        else {
+            self.set_status("no worker selected", true);
+            return;
+        };
+
+        let r = crate::ui::ratio(w.fs_used, w.capacity.max(1));
+        let free = (w.capacity - w.fs_used).max(0);
+        let mut view = DescribeView {
+            title: "describe worker".to_string(),
+            subject: w.address.clone(),
+            headline: Some(("worker".to_string(), w.address.clone())),
+            rows: vec![
+                ("endpoint".into(), w.address.clone()),
+                ("ip".into(), w.ip.clone()),
+                ("hostname".into(), w.hostname.clone()),
+                ("rpc port".into(), w.rpc_port.to_string()),
+                ("web port".into(), w.web_port.to_string()),
+                ("worker id".into(), w.worker_id.to_string()),
+                ("state".into(), w.status.clone()),
+                ("version".into(), w.version.clone()),
+                ("weight".into(), w.weight.to_string()),
+                ("capacity".into(), crate::ui::human_bytes(w.capacity)),
+                ("used".into(), crate::ui::human_bytes(w.fs_used)),
+                ("free".into(), crate::ui::human_bytes(free)),
+                (
+                    "occupancy".into(),
+                    format!("{:.1}% (disk, not CPU load)", r * 100.0),
+                ),
+                ("blocks".into(), w.block_num.to_string()),
+            ],
+            worker_blocks: Vec::new(),
+            blocks: Vec::new(),
+            loading: false,
+        };
+
+        // Storage classes are a per-disk breakdown when the cluster reports it.
+        for (kind, size) in &w.storage {
+            view.rows
+                .push((format!("storage {kind}"), crate::ui::human_bytes(*size)));
+        }
+
+        self.describe = Some(view);
+        self.mode = InputMode::Describe;
+    }
+
     fn on_mounts_key(&mut self, key: KeyEvent) {
         let n = self.mounts.data.as_ref().map(|l| l.len()).unwrap_or(0);
         match key.code {
@@ -976,10 +1160,21 @@ impl App {
                 self.mount_form = Some(MountForm::new(&cwd));
                 self.mode = InputMode::Mount;
             }
-            KeyCode::Char('u') | KeyCode::Delete => {
+            KeyCode::Char('u') => {
                 if let Some(m) = self.mounts.data.as_ref().and_then(|l| l.get(self.mount_selected))
                 {
-                    self.umount_confirm = Some(m.cv_path.clone());
+                    let path = m.cv_path.clone();
+                    let ufs = m.ufs_path.clone();
+                    self.confirm = Some(PendingConfirm {
+                        action: PendingAction::Umount { path: path.clone() },
+                        title: "unmount".to_string(),
+                        target: path,
+                        lines: vec![
+                            format!("ufs        {ufs}"),
+                            "cached data on this mount becomes unreachable until it is".to_string(),
+                            "mounted again; the ufs copy itself is not touched.".to_string(),
+                        ],
+                    });
                     self.mode = InputMode::Confirm;
                 } else {
                     self.set_status("no mount selected", true);
@@ -1105,35 +1300,62 @@ impl App {
 
     fn on_confirm_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('n') => {
-                self.umount_confirm = None;
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
+                self.confirm = None;
                 self.mode = InputMode::Normal;
-                self.set_status("unmount cancelled", false);
+                self.set_status("cancelled", false);
             }
             KeyCode::Enter | KeyCode::Char('y') => {
-                let Some(path) = self.umount_confirm.take() else {
+                let Some(pending) = self.confirm.take() else {
                     self.mode = InputMode::Normal;
                     return;
                 };
                 self.mode = InputMode::Normal;
-
-                let client = self.client.clone();
-                let tx = self.tx.clone();
-                let label = "umount".to_string();
-                let msg = format!("unmounted {path}");
-                self.spawn_call(async move {
-                    let res = client
-                        .umount(&path)
-                        .await
-                        .map(|_| msg)
-                        .map_err(|e| e.to_string());
-                    let _ = tx.send(AppEvent::TaskDone(TaskResult::OpDone {
-                        label,
-                        result: res,
-                    }));
-                });
+                self.run_pending(pending.action);
             }
             _ => {}
+        }
+    }
+
+    /// Execute a confirmed destructive action.
+    fn run_pending(&mut self, action: PendingAction) {
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+
+        let (label, msg) = match &action {
+            PendingAction::DeleteFile { path, recursive } => (
+                "delete".to_string(),
+                if *recursive {
+                    format!("removed tree {path}")
+                } else {
+                    format!("removed {path}")
+                },
+            ),
+            PendingAction::Umount { path } => ("umount".to_string(), format!("unmounted {path}")),
+            PendingAction::FreeFile { path, .. } => ("free".to_string(), format!("freed {path}")),
+        };
+
+        self.spawn_call(async move {
+            let res = match action {
+                PendingAction::DeleteFile { path, recursive } => {
+                    client.delete(&path, recursive).await
+                }
+                PendingAction::Umount { path } => client.umount(&path).await,
+                PendingAction::FreeFile { path, recursive } => {
+                    client.free(&path, recursive).await
+                }
+            };
+            let _ = tx.send(AppEvent::TaskDone(TaskResult::OpDone {
+                label,
+                result: res.map(|_| msg).map_err(|e| e.to_string()),
+            }));
+        });
+    }
+
+    fn on_describe_key(&mut self, key: KeyEvent) {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+            self.describe = None;
+            self.mode = InputMode::Normal;
         }
     }
 
@@ -1193,6 +1415,9 @@ impl App {
         if self.panel == Panel::Config {
             return self.on_config_key(key);
         }
+        if self.panel == Panel::Nodes {
+            return self.on_nodes_key(key);
+        }
         if self.panel == Panel::Mounts {
             return self.on_mounts_key(key);
         }
@@ -1220,9 +1445,13 @@ impl App {
                     self.files.show_hidden = !self.files.show_hidden;
                     self.files.selected = 0;
                 }
-                KeyCode::Char('d') => self.files_delete(false),
-                KeyCode::Char('D') => self.files_delete(true),
+                KeyCode::Delete | KeyCode::Char('x') => self.files_request_delete(false),
+                KeyCode::Char('D') => self.files_request_delete(true),
+                KeyCode::Char('d') => self.files_describe(),
                 KeyCode::Char('m') => self.files_mkdir(),
+                KeyCode::Char('F') => self.files_request_free(false),
+                KeyCode::Char('p') => self.open_form(TransferKind::Upload),
+                KeyCode::Char('g') => self.open_form(TransferKind::Download),
                 _ => {}
             }
         }
@@ -1425,24 +1654,152 @@ impl App {
         });
     }
 
-    fn files_delete(&mut self, recursive: bool) {
+    /// Ask before deleting. Deleting a directory always requires `-r`, so the
+    /// prompt states exactly what will be removed.
+    fn files_request_delete(&mut self, recursive: bool) {
         let Some(entry) = self.files.selected_entry().cloned() else {
+            self.set_status("nothing selected", true);
+            return;
+        };
+        if entry.is_dir && !recursive {
+            self.set_status(
+                format!("{} is a directory — press D to delete it recursively", entry.name),
+                true,
+            );
+            return;
+        }
+
+        let path = join_path(&self.files.cwd, &entry.name);
+        let mut lines = vec![
+            format!("size       {}", if entry.is_dir { "directory".to_string() } else { crate::ui::human_bytes(entry.len) }),
+            format!("owner      {}:{}", entry.owner, entry.group),
+        ];
+        if !entry.is_dir {
+            lines.push(format!("replicas   {}", entry.replicas));
+        }
+        lines.push(String::new());
+        lines.push(if entry.is_dir {
+            "this removes the directory and everything beneath it.".to_string()
+        } else {
+            "this removes the file and all of its block replicas.".to_string()
+        });
+
+        self.confirm = Some(PendingConfirm {
+            action: PendingAction::DeleteFile {
+                path: path.clone(),
+                recursive,
+            },
+            title: if recursive { "delete (recursive)" } else { "delete" }.to_string(),
+            target: path,
+            lines,
+        });
+        self.mode = InputMode::Confirm;
+    }
+
+    fn files_request_free(&mut self, recursive: bool) {
+        let Some(entry) = self.files.selected_entry().cloned() else {
+            self.set_status("nothing selected", true);
             return;
         };
         let path = join_path(&self.files.cwd, &entry.name);
-        let label = "delete".to_string();
-        let msg = format!("deleted {path}");
+        self.confirm = Some(PendingConfirm {
+            action: PendingAction::FreeFile {
+                path: path.clone(),
+                recursive,
+            },
+            title: "free cached blocks".to_string(),
+            target: path,
+            lines: vec![
+                "drops the Curvine block replicas while keeping the entry.".to_string(),
+                "re-reading the path pulls it back from the mounted ufs.".to_string(),
+            ],
+        });
+        self.mode = InputMode::Confirm;
+    }
+
+    /// `d` — request full detail for the highlighted entry.
+    fn files_describe(&mut self) {
+        let Some(entry) = self.files.selected_entry().cloned() else {
+            self.set_status("nothing selected", true);
+            return;
+        };
+        let path = join_path(&self.files.cwd, &entry.name);
+
+        let mut view = DescribeView {
+            title: format!("describe {}", entry.name),
+            subject: path.clone(),
+            headline: Some((
+                if entry.is_dir { "directory" } else { "file" }.to_string(),
+                path.clone(),
+            )),
+            rows: vec![
+                ("path".into(), path.clone()),
+                (
+                    "mode".into(),
+                    format!("{} ({:04o})", crate::ui::format_mode(entry.mode, entry.is_dir), entry.mode),
+                ),
+                ("owner".into(), format!("{}:{}", entry.owner, entry.group)),
+                (
+                    "size".into(),
+                    if entry.is_dir {
+                        "—".to_string()
+                    } else {
+                        format!("{} ({} bytes)", crate::ui::human_bytes(entry.len), entry.len)
+                    },
+                ),
+                ("modified".into(), crate::ui::format_mtime(entry.mtime)),
+                (
+                    "replicas".into(),
+                    format!("{} (configured factor)", entry.replicas),
+                ),
+            ],
+            worker_blocks: Vec::new(),
+            blocks: Vec::new(),
+            loading: false,
+        };
+
+        if entry.is_dir {
+            view.rows.push(("kind".into(), "directory".to_string()));
+            self.describe = Some(view);
+            self.mode = InputMode::Describe;
+            return;
+        }
+
+        // Files get block-level detail; show the popup immediately so the UI
+        // never appears frozen while the block locations are fetched.
+        view.rows.push(("blocks".into(), "loading…".to_string()));
+        view.loading = true;
+        self.describe = Some(view);
+        self.mode = InputMode::Describe;
+
         let client = self.client.clone();
         let tx = self.tx.clone();
+        let describe_path = path.clone();
         self.spawn_call(async move {
             let res = client
-                .delete(&path, recursive)
+                .file_blocks(&describe_path)
                 .await
-                .map(|_| msg)
+                .map(|blocks| {
+                    // Flatten to one row per replica; the UI aggregates.
+                    let mut rows = Vec::new();
+                    for b in blocks {
+                        for r in &b.replicas {
+                            rows.push(crate::event::BlockRow {
+                                block_id: format!("{}", b.block_id),
+                                offset: b.offset,
+                                len: b.len,
+                                worker: r.address.clone(),
+                                available: r.available,
+                                state: r.state.clone(),
+                            });
+                        }
+                    }
+                    rows
+                })
                 .map_err(|e| e.to_string());
-            let _ = tx.send(AppEvent::TaskDone(TaskResult::OpDone {
-                label,
-                result: res,
+            let _ = tx.send(AppEvent::TaskDone(TaskResult::Describe {
+                path: describe_path,
+                blocks: res,
             }));
         });
     }
@@ -1746,6 +2103,37 @@ impl App {
             other => self.set_status(format!("unknown command: {other}"), true),
         }
     }
+}
+
+/// Group replicas by worker, then sort by worker endpoint so the distribution
+/// reads as a stable table rather than block order.
+pub(crate) fn aggregate_by_worker(rows: &[crate::event::BlockRow]) -> Vec<WorkerBlocks> {
+    use std::collections::BTreeMap;
+
+    let mut map: BTreeMap<String, WorkerBlocks> = BTreeMap::new();
+    for r in rows {
+        let entry = map.entry(r.worker.clone()).or_insert_with(|| WorkerBlocks {
+            worker: r.worker.clone(),
+            block_ids: Vec::new(),
+            bytes: 0,
+            available: 0,
+            total: 0,
+        });
+        if !entry.block_ids.contains(&r.block_id) {
+            entry.block_ids.push(r.block_id.clone());
+            entry.bytes += r.len;
+        }
+        entry.total += 1;
+        if r.available {
+            entry.available += 1;
+        }
+    }
+
+    let mut out: Vec<WorkerBlocks> = map.into_values().collect();
+    for w in &mut out {
+        w.block_ids.sort();
+    }
+    out
 }
 
 // ---------------------------------------------------------------- conversions

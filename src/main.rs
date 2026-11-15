@@ -201,6 +201,12 @@ async fn probe(cfg: &AppConfig, client: &ClusterClient) -> i32 {
                 info.live_workers.len(),
                 info.lost_workers.len()
             );
+            for w in info.live_workers.iter().take(5) {
+                println!(
+                    "    endpoint    : {}:{} (host {}, id {}, {:?})",
+                    w.address.ip_addr, w.address.rpc_port, w.address.hostname, w.address.worker_id, w.status
+                );
+            }
         }
         Err(e) => {
             println!("cluster  : FAILED {e}");
@@ -208,24 +214,26 @@ async fn probe(cfg: &AppConfig, client: &ClusterClient) -> i32 {
         }
     }
 
-    match client.ls("/").await {
+    let ls_path = std::env::var("CURVINE_TUI_PROBE_LS").unwrap_or_else(|_| "/".to_string());
+    match client.ls(&ls_path).await {
         Ok(list) => {
-            println!("ls /     : OK ({} entries)", list.len());
+            println!("ls {ls_path} : OK ({} entries)", list.len());
             for f in list.iter().take(10) {
                 println!(
-                    "  {} {:>10} {}",
+                    "  {} {:>10}  repl={:<3} {}",
                     if f.is_dir { "d" } else { "-" },
                     if f.is_dir {
                         "-".to_string()
                     } else {
                         ui::human_bytes(f.len)
                     },
+                    f.replicas,
                     f.name
                 );
             }
         }
         Err(e) => {
-            println!("ls /     : FAILED {e}");
+            println!("ls {ls_path} : FAILED {e}");
             failed += 1;
         }
     }
@@ -298,6 +306,32 @@ async fn probe(cfg: &AppConfig, client: &ClusterClient) -> i32 {
             }
             Err(e) => {
                 println!("bench    : FAILED {e}");
+                failed += 1;
+            }
+        }
+    }
+
+    if let Ok(path) = std::env::var("CURVINE_TUI_PROBE_DESCRIBE") {
+        match client.file_blocks(&path).await {
+            Ok(blocks) => {
+                println!("describe : OK {} ({} blocks)", path, blocks.len());
+                for b in &blocks {
+                    let replicas: Vec<String> = b
+                        .replicas
+                        .iter()
+                        .map(|r| format!("{}{}", r.address, if r.available { "✓" } else { "✗" }))
+                        .collect();
+                    println!(
+                        "  block {:>18}  off {:>10}  len {:>10}  {}",
+                        b.block_id,
+                        b.offset,
+                        b.len,
+                        replicas.join("  ")
+                    );
+                }
+            }
+            Err(e) => {
+                println!("describe : FAILED {e}");
                 failed += 1;
             }
         }

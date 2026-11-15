@@ -12,9 +12,9 @@ data layer wired directly into curvine's own crates (`curvine-unified-fs`,
 
 | Panel | Backing CLI commands | State |
 |---|---|---|
-| Dashboard | `report`, `dfs df` | ✅ capacity gauge, inode/block counts, live worker table |
-| Files | `fs ls`, `mkdir`, `rm`, `mv` | ✅ browse, filter, mkdir, delete |
-| Nodes | `node` | ✅ per-worker capacity, usage %, blocks |
+| Dashboard | `report`, `dfs df` | ✅ single cluster panel (capacity, namespace, members) + worker table |
+| Files | `fs ls`, `mkdir`, `rm`, `mv` | ✅ browse, filter, icons, replica factor, describe, confirmed delete |
+| Nodes | `node` | ✅ per-worker endpoint, disk occupancy, describe |
 | Mounts | `mount`, `umount` | ✅ mount form, unmount confirm, mode/storage badges |
 | Jobs | `load-list`, `load-status`, `transfer` | ✅ list + progress (cancel pending) |
 | Transfers | `fs put`, `fs get` | ✅ live progress bars, per-file speed, cancel |
@@ -85,6 +85,9 @@ Options mirror the CLI's precedence rules (`--conf` > `CURVINE_CONF_FILE` > defa
 | `d` / `D` | delete / delete recursive |
 | `p` / `g` | upload / download (put / get form) |
 | `n` / `u` | new mount (form) / unmount selection (confirm) |
+| `d` | describe the selected file (blocks) or worker |
+| `Del` / `D` | delete / delete recursively — both ask first |
+| `F` | free cached blocks for the selection |
 | `enter` (Fsck) | scan; `f` targets the browsed directory; `x` cancels |
 | `enter` (Bench) | run; `p`/`t`/`d` tune profile/threads/duration |
 | `x` | cancel selected transfer |
@@ -165,12 +168,27 @@ Panels share one widget vocabulary so the UI reads consistently:
 
 | Control | Usage |
 |---|---|
-| **Tag** | state badges — `Live`, `done`, `degraded`, `0/5`. Tonal (`Neutral`/`Accent`/`Ok`/`Warn`/`Error`/`Info`) and either outlined or solid. `Tag::from_status` maps an arbitrary enum string onto a tone, so new states need no extra plumbing. |
+| **Status dot** | health and state: `● healthy`, `● lost`, `○ n/a`. Colour comes from `tone_for_status`, so a state can never be green in one panel and grey in another. The help popup documents the palette. |
+| **Tag** | categorical values only (mount mode, storage class, direction) — boxes are reserved for things that are not health. |
 | **Bar** | eighth-block progress (`▏▎▍▌▋▊▉`) so short bars keep sub-cell precision; `bar_with_pct` adds a right-aligned percentage. |
 | **Gauge** | full-width capacity/health/progress meter in a bordered block. |
 | **KV line** | `label  value` with a muted label so values carry the weight. |
 | **Input / Choice / Toggle** | the three form control styles used by the mount and transfer forms. |
 | **Badged panel title** | `mounts — 3 entries  [2 stale]`. |
+| **Rounded borders** | every panel and dialog uses `BorderType::Rounded`. |
+| **Nerd Font icons** | per-file-extension glyphs in the listing, per-panel glyphs in the tabs. Purely decorative: nothing depends on them semantically. |
 
 Every panel also reserves a bottom strip for selection detail or queue counters,
 so the same shape repeats across Files, Mounts, Transfers and Fsck.
+
+### Two things the UI deliberately does not claim
+
+- **`disk used` is not load.** A worker reports no CPU or IO metric, only
+  capacity/available/used bytes. The bar is labelled as occupancy.
+- **`replicas` in the file listing is the replication factor**, not the number of
+  live copies. It is drawn with a neutral dot and labelled "configured factor" in
+  the describe popup. Whether those copies exist is answered by Fsck, which
+  compares block locations against the expected count.
+
+Worker identity is always the `ip:port` endpoint. `WorkerAddress`'s `Display`
+impl renders `worker_id = 4, addr = host/ip:port`, which is never shown.

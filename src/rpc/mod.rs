@@ -153,6 +153,42 @@ impl ClusterClient {
             .map_err(AppError::from_fs)
     }
 
+    /// Block-level detail for a single file, reusing the fsck types so the
+    /// describe popup and the health scan cannot disagree.
+    pub async fn file_blocks(&self, path: &str) -> Result<Vec<fsck::BlockHealth>> {
+        let p = p(path)?;
+        let details = self
+            .fs()
+            .get_file_block_details(&p)
+            .await
+            .map_err(AppError::from_fs)?;
+
+        let mut blocks: Vec<fsck::BlockHealth> = details
+            .blocks
+            .into_iter()
+            .map(|b| fsck::BlockHealth {
+                block_id: b.block_id,
+                len: b.len,
+                offset: b.offset,
+                replicas: b
+                    .replicas
+                    .into_iter()
+                    .map(|r| fsck::ReplicaHealth {
+                        worker_id: r.worker_id,
+                        address: r
+                            .address
+                            .map(|a| a.connect_addr())
+                            .unwrap_or_else(|| format!("<worker {}>", r.worker_id)),
+                        state: format!("{:?}", r.state),
+                        available: matches!(r.state, curvine_model::WorkerStatus::Live),
+                    })
+                    .collect(),
+            })
+            .collect();
+        blocks.sort_by_key(|b| b.offset);
+        Ok(blocks)
+    }
+
     pub async fn umount(&self, cv: &str) -> Result<()> {
         let cv = p(cv)?;
         self.fs.umount(&cv).await.map_err(AppError::from_fs)

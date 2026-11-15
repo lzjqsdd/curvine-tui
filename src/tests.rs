@@ -11,7 +11,7 @@ use crate::app::{
     join_path, normalize_path, parent_path, App, FilesState, Loadable, Panel, TransferEntry,
 };
 use crate::event::{
-    BenchRowData, BenchSnapshot, FsckFileRow, FsckSnapshot, TransferKind, TransferState,
+    BenchRowData, BenchSnapshot, FsEntry, FsckFileRow, FsckSnapshot, TransferKind, TransferState,
 };
 use crate::transfer::new_cancel_flag;
 use crate::config::{AppConfig, ConfigOverrides};
@@ -51,7 +51,9 @@ fn test_app() -> App {
         form: None,
         mount_selected: 0,
         mount_form: None,
-        umount_confirm: None,
+        node_selected: 0,
+        confirm: None,
+        describe: None,
         next_transfer_id: 1,
         log: vec!["test".to_string()],
         help_visible: false,
@@ -120,7 +122,12 @@ fn populate_sample_data(app: &mut App) {
         fs_used: 60 * 1024 * 1024 * 1024,
         non_fs_used: 1024,
         workers: vec![WorkerRow {
-            address: "worker-1:8996".into(),
+            address: "127.0.0.1:8997".into(),
+            ip: "127.0.0.1".into(),
+            hostname: "localhost".into(),
+            rpc_port: 8997,
+            web_port: 9002,
+            worker_id: 1,
             status: "Live".into(),
             capacity: 50 * 1024 * 1024 * 1024,
             available: 20 * 1024 * 1024 * 1024,
@@ -128,6 +135,7 @@ fn populate_sample_data(app: &mut App) {
             block_num: 512,
             weight: 100,
             version: "0.2.2".into(),
+            storage: vec![("Ssd".into(), 50 * 1024 * 1024 * 1024)],
         }],
     });
 
@@ -505,7 +513,14 @@ fn umount_confirm_renders_target_path() {
     let mut app = test_app();
     app.panel = Panel::Mounts;
     app.mode = crate::app::InputMode::Confirm;
-    app.umount_confirm = Some("/data".to_string());
+    app.confirm = Some(crate::app::PendingConfirm {
+        action: crate::app::PendingAction::Umount {
+            path: "/data".to_string(),
+        },
+        title: "unmount".to_string(),
+        target: "/data".to_string(),
+        lines: vec!["cached data on this mount becomes unreachable".to_string()],
+    });
 
     let backend = TestBackend::new(100, 30);
     let mut term = Terminal::new(backend).unwrap();
@@ -515,6 +530,364 @@ fn umount_confirm_renders_target_path() {
     assert!(text.contains("unmount"), "confirm title missing:\n{text}");
     assert!(text.contains("/data"), "target path missing");
     assert!(text.contains("confirm"), "confirm hint missing");
+}
+
+// --------------------------------------------------------------- new chrome
+
+fn render_app(app: &App, w: u16, h: u16) -> String {
+    let backend = TestBackend::new(w, h);
+    let mut term = Terminal::new(backend).unwrap();
+    term.draw(|f| crate::ui::render(f, app)).unwrap();
+    buffer_text(&term)
+}
+
+#[test]
+fn panels_use_rounded_borders() {
+    let app = test_app();
+    let out = render_app(&app, 100, 30);
+    assert!(out.contains('╭'), "missing rounded top-left corner:\n{out}");
+    assert!(out.contains('╮'), "missing rounded top-right corner");
+    assert!(out.contains('╰'), "missing rounded bottom-left corner");
+    assert!(out.contains('╯'), "missing rounded bottom-right corner");
+    // The square box-drawing corners must be gone.
+    assert!(!out.contains('┌'), "square corner still present");
+    assert!(!out.contains('└'), "square corner still present");
+}
+
+#[test]
+fn file_rows_carry_type_icons() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.entries.push(FsEntry {
+        name: "job.log".into(),
+        path: "/data/job.log".into(),
+        is_dir: false,
+        len: 12,
+        mtime: 1_700_000_000_000,
+        mode: 0o644,
+        owner: "etl".into(),
+        group: "data".into(),
+        replicas: 1,
+    });
+
+    let out = render_app(&app, 110, 20);
+    assert!(out.contains(crate::ui::icons::DIR), "folder glyph missing");
+    assert!(
+        out.contains(crate::ui::icons::for_file("events.parquet")),
+        "parquet glyph missing"
+    );
+    assert!(out.contains(crate::ui::icons::LIST), "log glyph missing");
+}
+
+#[test]
+fn file_rows_show_replica_counts() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    let out = render_app(&app, 110, 20);
+    assert!(out.contains("repl"), "replica column header missing:\n{out}");
+    // Replica count is drawn as a coloured dot plus the number.
+    assert!(
+        out.contains(&format!("{} 3", crate::ui::components::DOT)),
+        "replica count 3 missing:\n{out}"
+    );
+    // Directories have no replicas and must not print a misleading count.
+    assert!(
+        !out.contains(&format!("{} 0", crate::ui::components::DOT)),
+        "directories should show a hollow dot, not a count"
+    );
+    assert!(
+        out.contains(crate::ui::components::DOT_HOLLOW),
+        "expected a hollow dot for non-replicated entries"
+    );
+}
+
+#[test]
+fn node_panel_labels_the_bar_as_disk_not_load() {
+    let mut app = test_app();
+    app.panel = Panel::Nodes;
+    populate_sample_data(&mut app);
+    let out = render_app(&app, 110, 16);
+    assert!(out.contains("disk used"), "expected a disk label:\n{out}");
+    assert!(
+        !out.chars().collect::<String>().contains("load "),
+        "the bar measures occupancy, not CPU load"
+    );
+}
+
+#[test]
+fn dashboard_reports_directory_and_file_counts() {
+    let mut app = test_app();
+    app.panel = Panel::Dashboard;
+    populate_sample_data(&mut app);
+    let out = render_app(&app, 110, 26);
+    assert!(out.contains("directories"), "directory count row missing");
+    assert!(out.contains("files"), "file count row missing");
+    assert!(out.contains("340"), "file count value missing");
+    assert!(out.contains("12"), "directory count value missing");
+}
+
+#[test]
+fn delete_key_opens_confirmation_instead_of_deleting() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 1; // events.parquet
+
+    app.on_event(crate::event::AppEvent::Key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Delete,
+        crossterm::event::KeyModifiers::NONE,
+    )));
+
+    let confirm = app.confirm.as_ref().expect("delete must ask first");
+    assert_eq!(confirm.title, "delete");
+    assert!(confirm.target.ends_with("events.parquet"));
+    assert!(matches!(
+        confirm.action,
+        crate::app::PendingAction::DeleteFile { recursive: false, .. }
+    ));
+    assert_eq!(app.mode, crate::app::InputMode::Confirm);
+}
+
+#[test]
+fn deleting_a_directory_without_recursion_is_refused() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 0; // warehouse/ (directory)
+
+    app.on_event(crate::event::AppEvent::Key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Delete,
+        crossterm::event::KeyModifiers::NONE,
+    )));
+
+    assert!(app.confirm.is_none(), "must not offer a non-recursive delete");
+    assert!(app.status.contains("D"), "expected a hint about D: {}", app.status);
+}
+
+#[test]
+fn confirm_dialog_renders_the_target_and_is_destructive() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 1;
+    app.on_event(crate::event::AppEvent::Key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Delete,
+        crossterm::event::KeyModifiers::NONE,
+    )));
+
+    let out = render_app(&app, 110, 26);
+    assert!(out.contains("delete"), "dialog title missing:\n{out}");
+    assert!(out.contains("events.parquet"), "target missing");
+    assert!(out.contains("replicas"), "detail rows missing");
+    assert!(out.contains("confirm"), "confirm footer missing");
+}
+
+#[test]
+fn d_opens_describe_with_file_detail() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 1;
+
+    app.on_event(crate::event::AppEvent::Key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('d'),
+        crossterm::event::KeyModifiers::NONE,
+    )));
+
+    let view = app.describe.as_ref().expect("d must open describe");
+    assert_eq!(app.mode, crate::app::InputMode::Describe);
+    assert!(view.title.contains("describe"));
+    assert!(view.subject.ends_with("events.parquet"));
+    let keys: Vec<&str> = view.rows.iter().map(|(k, _)| k.as_str()).collect();
+    for expected in ["path", "mode", "owner", "size", "replicas", "blocks"] {
+        assert!(keys.contains(&expected), "missing {expected} row: {keys:?}");
+    }
+}
+
+#[test]
+fn d_on_nodes_describes_the_worker() {
+    let mut app = test_app();
+    app.panel = Panel::Nodes;
+    populate_sample_data(&mut app);
+    app.node_selected = 0;
+
+    app.on_event(crate::event::AppEvent::Key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('d'),
+        crossterm::event::KeyModifiers::NONE,
+    )));
+
+    let view = app.describe.as_ref().expect("d must describe the worker");
+    assert!(view.subject.contains("127.0.0.1"));
+    assert!(!view.subject.contains("worker_id"), "subject must not use the verbose worker_id form");
+    let keys: Vec<&str> = view.rows.iter().map(|(k, _)| k.as_str()).collect();
+    for expected in ["capacity", "used", "free", "occupancy", "blocks"] {
+        assert!(keys.contains(&expected), "missing {expected}: {keys:?}");
+    }
+    // The occupancy row must say it is not CPU load.
+    let occ = view.rows.iter().find(|(k, _)| k == "occupancy").unwrap();
+    assert!(occ.1.contains("not CPU load"), "occupancy mislabelled: {}", occ.1);
+}
+
+#[test]
+fn escape_closes_the_describe_popup() {
+    let mut app = test_app();
+    app.panel = Panel::Nodes;
+    populate_sample_data(&mut app);
+    app.node_describe();
+    assert!(app.describe.is_some());
+
+    app.on_event(crate::event::AppEvent::Key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Esc,
+        crossterm::event::KeyModifiers::NONE,
+    )));
+    assert!(app.describe.is_none());
+    assert_eq!(app.mode, crate::app::InputMode::Normal);
+}
+
+#[test]
+fn header_tabs_carry_icons() {
+    let app = test_app();
+    let out = render_app(&app, 118, 30);
+    let header = out.lines().nth(1).unwrap_or_default();
+    for panel in Panel::ALL {
+        assert!(
+            header.contains(crate::ui::icons::for_panel(panel)),
+            "panel {:?} tab lacks its icon: {header:?}",
+            panel
+        );
+    }
+}
+
+#[test]
+fn worker_tables_lead_with_the_endpoint_not_the_worker_id() {
+    let mut app = test_app();
+    app.panel = Panel::Nodes;
+    populate_sample_data(&mut app);
+    let out = render_app(&app, 110, 18);
+
+    assert!(out.contains("127.0.0.1:8997"), "endpoint missing:\n{out}");
+    // WorkerAddress's Display form must never reach the table.
+    assert!(
+        !out.contains("worker_id =") && !out.contains("addr ="),
+        "verbose WorkerAddress form leaked into the UI:\n{out}"
+    );
+    assert!(!out.contains("worker-1"), "stale workerId label present");
+}
+
+#[test]
+fn dashboard_has_no_duplicated_aggregates() {
+    let mut app = test_app();
+    app.panel = Panel::Dashboard;
+    populate_sample_data(&mut app);
+    let out = render_app(&app, 112, 26);
+
+    // The old layout had three separate panels repeating the same numbers.
+    assert!(!out.contains("at a glance"), "duplicate strip still present");
+    assert!(out.contains("cluster"), "cluster panel missing");
+
+    // Capacity is folded into the cluster panel, not its own block.
+    let capacity_panels = out.matches("capacity").count();
+    assert_eq!(capacity_panels, 1, "capacity should appear exactly once");
+}
+
+#[test]
+fn describe_groups_blocks_by_worker() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.mode = crate::app::InputMode::Describe;
+    app.describe = Some(crate::app::DescribeView {
+        title: "describe events.parquet".into(),
+        subject: "/data/events.parquet".into(),
+        headline: Some(("file".into(), "/data/events.parquet".into())),
+        rows: vec![("replicas".into(), "3 (configured factor)".into())],
+        worker_blocks: vec![
+            crate::app::WorkerBlocks {
+                worker: "127.0.0.1:8997".into(),
+                block_ids: vec!["101".into(), "102".into()],
+                bytes: 3_000_000,
+                available: 2,
+                total: 2,
+            },
+            crate::app::WorkerBlocks {
+                worker: "127.0.0.2:8997".into(),
+                block_ids: vec!["101".into()],
+                bytes: 1_500_000,
+                available: 0,
+                total: 1,
+            },
+        ],
+        blocks: vec![
+            crate::event::BlockRow {
+                block_id: "101".into(),
+                offset: 0,
+                len: 1_500_000,
+                worker: "127.0.0.1:8997".into(),
+                available: true,
+                state: "Live".into(),
+            },
+            crate::event::BlockRow {
+                block_id: "101".into(),
+                offset: 0,
+                len: 1_500_000,
+                worker: "127.0.0.2:8997".into(),
+                available: false,
+                state: "Lost".into(),
+            },
+        ],
+        loading: false,
+    });
+
+    let out = render_app(&app, 116, 32);
+    assert!(out.contains("distribution by worker"), "worker section missing:\n{out}");
+    assert!(out.contains("blocks by offset"), "block section missing");
+    assert!(out.contains("127.0.0.1:8997"), "worker endpoint missing");
+    assert!(out.contains("2 blocks"), "per-worker block count missing");
+    // The lost replica must be visible as its state, not just a count.
+    assert!(out.contains("Lost"), "non-live replica state missing");
+}
+
+#[test]
+fn aggregate_by_worker_sorts_and_counts() {
+    let rows = vec![
+        crate::event::BlockRow {
+            block_id: "2".into(),
+            offset: 10,
+            len: 100,
+            worker: "b:1".into(),
+            available: true,
+            state: "Live".into(),
+        },
+        crate::event::BlockRow {
+            block_id: "1".into(),
+            offset: 0,
+            len: 100,
+            worker: "a:1".into(),
+            available: false,
+            state: "Lost".into(),
+        },
+        crate::event::BlockRow {
+            block_id: "1".into(),
+            offset: 0,
+            len: 100,
+            worker: "b:1".into(),
+            available: true,
+            state: "Live".into(),
+        },
+    ];
+
+    let agg = crate::app::aggregate_by_worker(&rows);
+    // Sorted by endpoint.
+    assert_eq!(agg[0].worker, "a:1");
+    assert_eq!(agg[1].worker, "b:1");
+    // b holds two distinct blocks totalling 200 bytes, both readable.
+    assert_eq!(agg[1].block_ids, vec!["1".to_string(), "2".to_string()]);
+    assert_eq!(agg[1].bytes, 200);
+    assert_eq!((agg[1].available, agg[1].total), (2, 2));
+    // a holds one block with a single, unreadable replica.
+    assert_eq!((agg[0].available, agg[0].total), (0, 1));
 }
 
 #[test]
@@ -626,3 +999,7 @@ fn format_mode_matches_ls_layout() {
     assert_eq!(crate::ui::format_mode(0o644, false), "-rw-r--r--");
     assert_eq!(crate::ui::format_mode(0o000, false), "----------");
 }
+
+
+
+

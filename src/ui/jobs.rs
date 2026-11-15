@@ -55,7 +55,7 @@ fn render_jobs_table(f: &mut Frame, app: &App, area: Rect) {
                 .map(|j| {
                     let mut cells = vec![
                         Cell::from(short_id(&j.job_id)).style(Style::default().fg(th::MUTED)),
-                        Cell::from(Tag::from_status(&j.state).cell()),
+                        Cell::from(components::dot_status(&j.state)),
                         Cell::from(bar_with_pct(j.progress, 13))
                             .style(Style::default().fg(th::usage_tone(1.0 - j.progress).color())),
                     ];
@@ -126,11 +126,17 @@ fn render_jobs_summary(f: &mut Frame, app: &App, area: Rect) {
             .filter(|j| j.state.to_ascii_lowercase().contains("fail"))
             .count();
 
-        spans.push(Tag::solid(format!("{running} running"), Tone::Accent).span());
-        spans.push(Span::raw(" "));
-        spans.push(Tag::new(format!("{done} complete"), Tone::Ok).span());
-        spans.push(Span::raw(" "));
-        spans.push(Tag::new(format!("{failed} failed"), Tone::Error).span());
+        let counter = |tone: Tone, n: usize, label: &str| -> Vec<Span<'static>> {
+            vec![
+                components::dot(if n > 0 { tone } else { Tone::Neutral }),
+                Span::raw(" "),
+                Span::styled(format!("{n} {label}"), Style::default().fg(th::MUTED)),
+                Span::raw("   "),
+            ]
+        };
+        spans.extend(counter(Tone::Accent, running, "running"));
+        spans.extend(counter(Tone::Ok, done, "complete"));
+        spans.extend(counter(Tone::Error, failed, "failed"));
         spans.push(Span::raw("   "));
         spans.push(Span::styled(
             "load jobs stream progress from the job master",

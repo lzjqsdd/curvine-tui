@@ -25,11 +25,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 
     if let Some(form) = &app.mount_form {
         render_form(f, form, area);
-    }
-    if let Some(path) = &app.umount_confirm {
-        render_confirm(f, path, area);
-    }
-}
+    }}
 
 fn render_table(f: &mut Frame, app: &App, area: Rect) {
     let wide = area.width >= 90;
@@ -151,6 +147,9 @@ fn render_selected(f: &mut Frame, app: &App, area: Rect) {
             Span::raw("  "),
             Tag::new(format!("id {}", m.mount_id), Tone::Neutral).span(),
             Span::raw(" "),
+            components::dot(Tone::Ok),
+            Span::styled(" mounted", Style::default().fg(th::MUTED)),
+            Span::raw(" "),
             Tag::new(format!("ttl {}", if m.ttl_ms > 0 { m.ttl_ms / 1000 } else { 0 }), Tone::Neutral)
                 .span(),
             if m.storage_type.is_empty() {
@@ -224,35 +223,132 @@ fn render_form(f: &mut Frame, form: &MountForm, area: Rect) {
     );
 }
 
-fn render_confirm(f: &mut Frame, path: &str, area: Rect) {
-    let inner = components::centered_rect(52, 24, area);
-    f.render_widget(ratatui::widgets::Clear, inner);
+/// Convert a describe view into the generic dialog shape.
+///
+/// Blocks are shown twice on purpose: once aggregated per worker (where does
+/// the data actually live?) and once flat by offset (which block is which?).
+/// A single flat list makes the distribution unreadable past a handful of
+/// blocks, and a single aggregate hides per-block replica damage.
+pub fn describe_to_dialog(view: &crate::app::DescribeView) -> components::Dialog {
+    use crate::ui::{human_bytes, theme};
 
-    let lines = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  unmount ", Style::default().fg(th::TEXT)),
-            Tag::new(path.to_string(), Tone::Warn).span(),
-            Span::styled(" ?", Style::default().fg(th::TEXT)),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  cached data on this mount becomes unreachable.",
-            Style::default().fg(th::MUTED),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  enter ", Style::default().fg(th::ERROR)),
-            Span::styled("confirm   ", Style::default().fg(th::MUTED)),
-            Span::styled("esc ", Style::default().fg(th::ACCENT_DIM)),
-            Span::styled("cancel", Style::default().fg(th::MUTED)),
-        ]),
-    ];
+    let mut dlg = components::Dialog::new(view.title.clone());
+    if let Some((tag, subject)) = &view.headline {
+        dlg = dlg.headline(tag.clone(), Tone::Info);
+        dlg.notes.push((subject.clone(), Tone::Accent));
+    }
+    for (k, v) in &view.rows {
+        dlg = dlg.row(k.clone(), v.clone());
+    }
 
-    f.render_widget(
-        Paragraph::new(lines).block(components::panel_block("confirm")),
-        inner,
-    );
+    if view.loading {
+        return dlg;
+    }
+
+    // --- distribution by worker
+    if !view.worker_blocks.is_empty() {
+        let total_bytes: i64 = view.worker_blocks.iter().map(|w| w.bytes).sum();
+        let mut lines: Vec<Line> = Vec::new();
+        for w in &view.worker_blocks {
+            let tone = if w.available == w.total {
+                Tone::Ok
+            } else if w.available == 0 {
+                Tone::Error
+            } else {
+                Tone::Warn
+            };
+            let share = if total_bytes > 0 {
+                w.bytes as f64 / total_bytes as f64
+            } else {
+                0.0
+            };
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                components::dot(tone),
+                Span::raw(" "),
+                Span::styled(
+                    format!("{:<22}", w.worker),
+                    Style::default().fg(theme::TEXT),
+                ),
+                Span::styled(
+                    format!("{:>3} blocks  ", w.block_ids.len()),
+                    Style::default().fg(theme::MUTED),
+                ),
+                Span::styled(
+                    format!("{:>9}  ", human_bytes(w.bytes)),
+                    Style::default().fg(theme::TEXT),
+                ),
+                Span::styled(
+                    components::bar(share, 8),
+                    Style::default().fg(theme::usage_tone(1.0 - share).color()),
+                ),
+                Span::styled(
+                    format!(" {:>3.0}%", share * 100.0),
+                    Style::default().fg(theme::MUTED),
+                ),
+            ]));
+        }
+        dlg = dlg.section("distribution by worker", lines);
+    }
+
+    // --- flat block list, aggregated per block id
+    if !view.blocks.is_empty() {
+        use std::collections::BTreeMap;
+        // block id -> (offset, len, available, total)
+        // block id -> (offset, len, available, total, distinct non-live states)
+        let mut per_block: BTreeMap<&str, (i64, i64, usize, usize, Vec<String>)> =
+            BTreeMap::new();
+        for r in &view.blocks {
+            let e = per_block
+                .entry(r.block_id.as_str())
+                .or_insert((r.offset, r.len, 0, 0, Vec::new()));
+            e.3 += 1;
+            if r.available {
+                e.2 += 1;
+            } else if !e.4.contains(&r.state) {
+                e.4.push(r.state.clone());
+            }
+        }
+
+        let mut lines: Vec<Line> = Vec::new();
+        for (id, (offset, len, avail, total, bad_states)) in per_block {
+            let tone = if avail == 0 {
+                Tone::Error
+            } else if avail < total {
+                Tone::Warn
+            } else {
+                Tone::Ok
+            };
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(format!("{id:<20}"), Style::default().fg(theme::DIR)),
+                Span::styled(
+                    format!("{:>9}", human_bytes(len)),
+                    Style::default().fg(theme::TEXT),
+                ),
+                Span::styled(
+                    format!("  @{:<10}", human_bytes(offset)),
+                    Style::default().fg(theme::MUTED),
+                ),
+                components::dot(tone),
+                Span::styled(
+                    format!(" {avail}/{total}"),
+                    Style::default().fg(tone.color()),
+                ),
+                Span::styled(
+                    if bad_states.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  {}", bad_states.join(", "))
+                    },
+                    Style::default().fg(th::ERROR),
+                ),
+            ]));
+        }
+        dlg = dlg.section("blocks by offset", lines);
+    }
+
+    dlg
 }
 
 /// Shared helper for the free-space column in other panels.

@@ -1,4 +1,5 @@
-//! File browser: breadcrumb header, filtered listing, and a detail strip.
+//! File browser: breadcrumb header, iconised listing with replica counts, and
+//! a detail strip for the highlighted entry.
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -9,8 +10,10 @@ use ratatui::{
 };
 
 use super::{
-    components::{self, kv_line, bar, Tag, Tone},
-    format_mode, format_mtime, human_bytes, theme as th,
+    components::{self, bar, Tag, Tone},
+    format_mode, format_mtime, human_bytes,
+    icons,
+    theme as th,
 };
 use crate::app::App;
 
@@ -30,7 +33,13 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_breadcrumb(f: &mut Frame, app: &App, area: Rect) {
-    let mut spans = vec![Span::raw(" ")];
+    let mut spans = vec![
+        Span::raw(" "),
+        Span::styled(
+            format!("{} ", icons::DIR_OPEN),
+            Style::default().fg(th::ACCENT),
+        ),
+    ];
     let parts: Vec<&str> = app.files.cwd.split('/').filter(|s| !s.is_empty()).collect();
     spans.push(Span::styled(
         "/",
@@ -54,8 +63,13 @@ fn render_breadcrumb(f: &mut Frame, app: &App, area: Rect) {
         right.push(Tag::new("hidden off", Tone::Neutral).span());
         right.push(Span::raw(" "));
     }
-    let count = app.files.visible().len();
-    right.push(Tag::new(format!("{count} entries"), Tone::Info).span());
+    let dirs = app.files.visible().iter().filter(|e| e.is_dir).count();
+    let files = app.files.visible().len() - dirs;
+    right.push(
+        Tag::new(format!("{dirs} dirs"), Tone::Info).span(),
+    );
+    right.push(Span::raw(" "));
+    right.push(Tag::new(format!("{files} files"), Tone::Neutral).span());
     right.push(Span::raw(" "));
 
     let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
@@ -79,20 +93,21 @@ fn render_breadcrumb(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_table(f: &mut Frame, app: &App, area: Rect) {
-    let wide = area.width >= 88;
+    // Icon + name always; owner/modified appear as space allows; replicas are
+    // the point of the panel so they survive the longest.
+    let wide = area.width >= 92;
+    let medium = area.width >= 74;
 
-    let mut header_cells = vec![
-        Cell::from("mode"),
-        Cell::from("owner"),
-        Cell::from("size"),
-    ];
+    let mut header_cells = vec![Cell::from("  name")];
+    if wide {
+        header_cells.push(Cell::from("mode"));
+        header_cells.push(Cell::from("owner"));
+    }
+    header_cells.push(Cell::from("size"));
     if wide {
         header_cells.push(Cell::from("modified"));
     }
-    header_cells.push(Cell::from("name"));
-    if wide {
-        header_cells.push(Cell::from("type"));
-    }
+    header_cells.push(Cell::from("repl"));
 
     let header = Row::new(header_cells).style(
         Style::default()
@@ -104,39 +119,54 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
     let rows: Vec<Row> = visible
         .iter()
         .map(|e| {
-            let name_style = if e.is_dir {
-                Style::default().fg(th::DIR).add_modifier(Modifier::BOLD)
+            let (glyph, name_style) = if e.is_dir {
+                (icons::DIR, Style::default().fg(th::DIR).add_modifier(Modifier::BOLD))
             } else {
-                Style::default().fg(th::TEXT)
+                (
+                    icons::for_file(&e.name),
+                    Style::default().fg(th::TEXT),
+                )
             };
-            let mut cells = vec![
-                Cell::from(format_mode(e.mode, e.is_dir)).style(Style::default().fg(th::MUTED)),
-                Cell::from(e.owner.clone()).style(Style::default().fg(th::MUTED)),
+
+            let name_cell = Cell::from(Line::from(vec![
+                Span::styled(format!("{glyph} "), Style::default().fg(if e.is_dir {
+                    th::DIR
+                } else {
+                    th::MUTED
+                })),
+                Span::styled(
+                    if e.is_dir {
+                        format!("{}/", e.name)
+                    } else {
+                        e.name.clone()
+                    },
+                    name_style,
+                ),
+            ]));
+
+            let mut cells = vec![name_cell];
+            if wide {
+                cells.push(
+                    Cell::from(format_mode(e.mode, e.is_dir))
+                        .style(Style::default().fg(th::MUTED)),
+                );
+                cells.push(
+                    Cell::from(e.owner.clone()).style(Style::default().fg(th::MUTED)),
+                );
+            }
+            cells.push(
                 Cell::from(if e.is_dir {
                     "—".to_string()
                 } else {
                     human_bytes(e.len)
                 })
                 .style(Style::default().fg(th::TEXT)),
-            ];
+            );
             if wide {
                 cells.push(Cell::from(format_mtime(e.mtime)));
             }
-            cells.push(
-                Cell::from(if e.is_dir {
-                    format!("{}/", e.name)
-                } else {
-                    e.name.clone()
-                })
-                .style(name_style),
-            );
-            if wide {
-                cells.push(Cell::from(if e.is_dir {
-                    Tag::new("dir", Tone::Info).cell()
-                } else {
-                    Tag::new("file", Tone::Neutral).cell()
-                }));
-            }
+            cells.push(replica_cell(e.replicas, e.is_dir));
+
             Row::new(cells)
         })
         .collect();
@@ -149,18 +179,17 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
         format!("list {}", app.files.cwd)
     };
 
-    let mut widths = vec![
-        Constraint::Length(10),
-        Constraint::Length(8),
-        Constraint::Length(10),
-    ];
+    let mut widths = vec![Constraint::Min(22)];
+    if wide {
+        widths.push(Constraint::Length(10));
+        widths.push(Constraint::Length(8));
+    }
+    widths.push(Constraint::Length(10));
     if wide {
         widths.push(Constraint::Length(16));
     }
-    widths.push(Constraint::Min(18));
-    if wide {
-        widths.push(Constraint::Length(6));
-    }
+    widths.push(Constraint::Length(6));
+    let _ = medium;
 
     let mut state = TableState::default();
     if !rows.is_empty() {
@@ -177,18 +206,36 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(table, area, &mut state);
 }
 
-/// Detail strip for the highlighted entry: mode bits, ownership, size bar.
+/// Replica factor for the entry.
+///
+/// `FileStatus::replicas` is the replication factor a file was created with, not
+/// the number of live copies — so it is drawn with a neutral dot. Whether those
+/// copies actually exist is a separate question, answered by the Fsck panel,
+/// which compares against block locations.
+fn replica_cell(replicas: i32, is_dir: bool) -> Cell<'static> {
+    if is_dir || replicas <= 0 {
+        return Cell::from(Span::styled(
+            format!("{} —", components::DOT_HOLLOW),
+            Style::default().fg(th::MUTED),
+        ));
+    }
+    Cell::from(components::dot_count(Tone::Info, replicas))
+}
+
 fn render_detail(f: &mut Frame, app: &App, area: Rect) {
     let line = match app.files.selected_entry() {
         Some(e) => {
             let size_ratio = if e.is_dir || e.len == 0 {
                 0.0
             } else {
-                // Relative to 1 GiB, purely as a visual magnitude cue.
                 (e.len as f64 / (1024.0 * 1024.0 * 1024.0)).clamp(0.02, 1.0)
             };
             let mut spans = vec![
                 Span::raw(" "),
+                Span::styled(
+                    format!("{} ", if e.is_dir { icons::DIR } else { icons::for_file(&e.name) }),
+                    Style::default().fg(if e.is_dir { th::DIR } else { th::MUTED }),
+                ),
                 Tag::new(
                     if e.is_dir { "directory" } else { "file" },
                     if e.is_dir { Tone::Info } else { Tone::Neutral },
@@ -225,9 +272,17 @@ fn render_detail(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(th::MUTED),
             ));
             if e.replicas > 0 && !e.is_dir {
-                spans.push(Span::raw(" "));
-                spans.push(Tag::new(format!("{} replicas", e.replicas), Tone::Accent).span());
+                spans.push(Span::raw("  "));
+                spans.push(components::dot(Tone::Info));
+                spans.push(Span::styled(
+                    format!(" {} replicas (configured)", e.replicas),
+                    Style::default().fg(th::MUTED),
+                ));
             }
+            spans.push(Span::styled(
+                "   d describe",
+                Style::default().fg(th::BORDER),
+            ));
             Line::from(spans)
         }
         None => Line::from(Span::styled(
@@ -240,10 +295,4 @@ fn render_detail(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(line).block(components::panel_block("selected")),
         area,
     );
-}
-
-/// Kept for parity with other panels that show free space.
-#[allow(dead_code)]
-fn _kv(label: &str, value: &str) -> Line<'static> {
-    kv_line(label, value, Tone::Neutral, 12)
 }

@@ -13,6 +13,7 @@ use crate::app::{App, InputMode, Panel};
 pub mod components;
 pub mod dashboard;
 pub mod files;
+pub mod icons;
 pub mod jobs;
 pub mod mounts;
 pub mod bench;
@@ -51,6 +52,13 @@ pub fn render(f: &mut Frame, app: &App) {
     render_status(f, app, chunks[2]);
     render_hints(f, app, chunks[3]);
 
+    // Blocking dialogs sit above panel content and below help.
+    if let Some(pending) = &app.confirm {
+        components::render_dialog(f, f.area(), &confirm_to_dialog(pending));
+    } else if let Some(view) = &app.describe {
+        components::render_dialog(f, f.area(), &mounts::describe_to_dialog(view));
+    }
+
     if app.help_visible {
         components::render_help_popup(f, f.area());
     }
@@ -63,12 +71,17 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
     let long: Vec<String> = Panel::ALL
         .iter()
         .enumerate()
-        .map(|(i, p)| format!(" {} {} ", i + 1, p.title()))
+        .map(|(i, p)| format!(" {} {} {} ", i + 1, p.icon(), p.title()))
         .collect();
     let short: Vec<String> = Panel::ALL
         .iter()
         .enumerate()
-        .map(|(i, p)| format!(" {} {} ", i + 1, p.short_title()))
+        .map(|(i, p)| format!(" {} {} {} ", i + 1, p.icon(), p.short_title()))
+        .collect();
+    let icons_only: Vec<String> = Panel::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, p)| format!(" {} {} ", i + 1, p.icon()))
         .collect();
     let minimal: Vec<String> = Panel::ALL
         .iter()
@@ -81,6 +94,8 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         long
     } else if width(&short) <= inner {
         short
+    } else if width(&icons_only) <= inner {
+        icons_only
     } else {
         minimal
     };
@@ -90,6 +105,7 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(ratatui::widgets::BorderType::Rounded)
                 .border_style(Style::default().fg(th::BORDER))
                 // The active panel name lives in the border so it stays
                 // readable even when the tab strip falls back to bare numbers.
@@ -177,14 +193,9 @@ fn render_hints(f: &mut Frame, app: &App, area: Rect) {
         );
         return;
     }
-    if app.mode == InputMode::Confirm {
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "enter confirm   esc cancel",
-                Style::default().fg(th::WARN),
-            ))),
-            area,
-        );
+    if matches!(app.mode, InputMode::Confirm | InputMode::Describe) {
+        // The dialog itself renders its footers; a second copy here would just
+        // be noise.
         return;
     }
     if app.mode == InputMode::Transfer {
@@ -199,10 +210,11 @@ fn render_hints(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let hints = match app.panel {
-        Panel::Files => "↑↓ move ⏎ enter ⌫ up / filter m mkdir p put g get d rm ? help q quit",
+        Panel::Files => "↑↓ move  ⏎ enter  ⌫ up  / filter  d describe  Del del  D del -r  p put  g get  ? help",
         Panel::Transfers => "↑↓ select x cancel c clear p put g get r refresh ? help q quit",
         Panel::Mounts => "↑↓ select  n new mount  u unmount  r refresh  ? help  q quit",
         Panel::Fsck => "enter scan  x cancel  f target=cwd  r rescan  ? help  q quit",
+        Panel::Nodes => "↑↓ select  d describe  r refresh  ? help  q quit",
         Panel::Config => "/ filter keys  r reload  ? help  q quit",
         Panel::Bench => "enter run  p profile  t threads  d duration  r rerun  ? help  q quit",
         _ => "tab panels 1-9 jump p put g get r refresh : cmd ? help q quit",
@@ -217,6 +229,27 @@ fn render_hints(f: &mut Frame, app: &App, area: Rect) {
 }
 
 // Small shared formatting helpers used by every panel.
+
+/// Build the confirmation dialog for a pending destructive action.
+pub fn confirm_to_dialog(p: &crate::app::PendingConfirm) -> components::Dialog {
+    let mut dlg = components::Dialog::new(&p.title)
+        .headline(p.target.clone(), components::Tone::Error)
+        .destructive(true);
+    for line in &p.lines {
+        if line.is_empty() {
+            continue;
+        }
+        // Lines already formatted as "label  value" are split so the value
+        // aligns with the rest of the dialog grid.
+        match line.split_once("  ") {
+            Some((k, v)) if k.len() <= 12 && !k.contains(' ') => {
+                dlg = dlg.row(k.trim().to_string(), v.trim().to_string());
+            }
+            _ => dlg = dlg.note(line.clone(), components::Tone::Warn),
+        }
+    }
+    dlg
+}
 
 pub fn human_bytes(n: i64) -> String {
     const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];

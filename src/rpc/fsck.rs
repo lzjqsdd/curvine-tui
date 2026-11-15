@@ -257,10 +257,13 @@ impl ClusterClient {
                             .into_iter()
                             .map(|r| ReplicaHealth {
                                 worker_id: r.worker_id,
+                                // WorkerAddress's Display is the verbose
+                                // "worker_id = .., addr = host/ip:port" form;
+                                // the endpoint is what the UI needs.
                                 address: r
                                     .address
-                                    .map(|a| a.to_string())
-                                    .unwrap_or_else(|| format!("#{}", r.worker_id)),
+                                    .map(|a| a.connect_addr())
+                                    .unwrap_or_else(|| format!("<worker {}>", r.worker_id)),
                                 state: format!("{:?}", r.state),
                                 available: matches!(r.state, WorkerStatus::Live),
                             })

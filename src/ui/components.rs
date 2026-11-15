@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Gauge, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Gauge, Paragraph, Wrap},
     Frame,
 };
 
@@ -19,6 +19,7 @@ use super::theme as th;
 pub fn panel_block(title: &str) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(th::BORDER))
         .title(Span::styled(
             format!(" {title} "),
@@ -32,6 +33,7 @@ pub fn panel_block(title: &str) -> Block<'static> {
 pub fn panel_block_badged(title: &str, badge: Tag) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(th::BORDER))
         .title(Line::from(vec![
             Span::styled(
@@ -96,35 +98,6 @@ impl Tag {
         }
     }
 
-    /// Build a tag from an arbitrary status string (e.g. a Debug-formatted enum).
-    pub fn from_status(s: &str) -> Self {
-        let lower = s.to_ascii_lowercase();
-        let tone = if ["live", "ok", "done", "complete", "success", "healthy"]
-            .iter()
-            .any(|k| lower.contains(k))
-        {
-            Tone::Ok
-        } else if ["lost", "fail", "error", "dead", "unhealthy"]
-            .iter()
-            .any(|k| lower.contains(k))
-        {
-            Tone::Error
-        } else if ["warn", "degrad", "under", "cancel", "stale", "pending"]
-            .iter()
-            .any(|k| lower.contains(k))
-        {
-            Tone::Warn
-        } else if ["run", "active", "loading", "scan", "in_progress"]
-            .iter()
-            .any(|k| lower.contains(k))
-        {
-            Tone::Accent
-        } else {
-            Tone::Neutral
-        };
-        Self::new(s, tone)
-    }
-
     pub fn span(&self) -> Span<'static> {
         let color = self.tone.color();
         let style = if self.solid {
@@ -153,6 +126,71 @@ impl Tag {
     pub fn width(&self) -> usize {
         self.text.chars().count() + if self.solid { 0 } else { 2 }
     }
+}
+
+/// Map an arbitrary status string onto a tone. `Tag` and the status dots share
+/// this so a state can never be green in one panel and grey in another.
+pub fn tone_for_status(s: &str) -> Tone {
+    let lower = s.to_ascii_lowercase();
+    if ["live", "ok", "done", "complete", "success", "healthy", "available"]
+        .iter()
+        .any(|k| lower.contains(k))
+    {
+        Tone::Ok
+    } else if ["lost", "fail", "error", "dead", "unhealthy", "missing", "empty"]
+        .iter()
+        .any(|k| lower.contains(k))
+    {
+        Tone::Error
+    } else if ["warn", "degrad", "under", "cancel", "stale", "pending", "partial"]
+        .iter()
+        .any(|k| lower.contains(k))
+    {
+        Tone::Warn
+    } else if ["run", "active", "loading", "scan", "in_progress", "queued"]
+        .iter()
+        .any(|k| lower.contains(k))
+    {
+        Tone::Accent
+    } else {
+        Tone::Neutral
+    }
+}
+
+// --------------------------------------------------------------- status dots
+
+/// Filled circle — the health/status indicator used across every panel.
+pub const DOT: &str = "●";
+/// Hollow circle — a state that is expected but not present.
+pub const DOT_HOLLOW: &str = "○";
+
+/// A single coloured dot.
+pub fn dot(tone: Tone) -> Span<'static> {
+    Span::styled(DOT, Style::default().fg(tone.color()))
+}
+
+/// `● label`. Quieter than a boxed tag, which is why health states use this
+/// shape and only categorical values keep the box.
+pub fn dot_label(tone: Tone, label: impl Into<String>) -> Line<'static> {
+    Line::from(vec![
+        dot(tone),
+        Span::raw(" "),
+        Span::styled(label.into(), Style::default().fg(tone.color())),
+    ])
+}
+
+/// Dot plus label straight from a status string.
+pub fn dot_status(label: &str) -> Line<'static> {
+    dot_label(tone_for_status(label), label)
+}
+
+/// A dot where only the count matters, e.g. replica health.
+pub fn dot_count(tone: Tone, count: impl std::fmt::Display) -> Line<'static> {
+    Line::from(vec![
+        dot(tone),
+        Span::raw(" "),
+        Span::styled(count.to_string(), Style::default().fg(th::TEXT)),
+    ])
 }
 
 // ------------------------------------------------------------------ progress
@@ -365,7 +403,7 @@ pub fn popup(f: &mut Frame, area: Rect, title: &str) -> Rect {
 // ------------------------------------------------------------------- help
 
 pub fn render_help_popup(f: &mut Frame, area: Rect) {
-    let rect = centered_rect(64, 72, area);
+    let rect = centered_rect(66, 88, area);
     f.render_widget(Clear, rect);
 
     let rows: Vec<(&str, &str)> = vec![
@@ -401,7 +439,30 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
             Tag::solid("9 panels", Tone::Accent).span(),
         ]),
         Line::from(""),
+        section("status dots"),
     ];
+
+    // Legend: the dot colours are the health vocabulary, so spell them out once.
+    let legend = [
+        (Tone::Ok, "healthy / live / complete"),
+        (Tone::Accent, "in progress"),
+        (Tone::Warn, "degraded / pending"),
+        (Tone::Error, "failed / lost / under-replicated"),
+        (Tone::Neutral, "idle / unknown / not applicable"),
+    ];
+    for (tone, meaning) in legend {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            dot(tone),
+            Span::styled(
+                format!("  {meaning}"),
+                Style::default().fg(th::MUTED),
+            ),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(section("keys"));
+
     for (k, d) in rows {
         lines.push(Line::from(vec![
             Span::styled(format!("  {k:<18}"), Style::default().fg(th::ACCENT_DIM)),
@@ -414,4 +475,206 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
         .wrap(Wrap { trim: false })
         .alignment(Alignment::Left);
     f.render_widget(p, rect);
+}
+
+
+// ------------------------------------------------------------------ dialogs
+
+/// A generic blocking dialog. Used for both confirmations and describe views so
+/// the app only needs one popup mechanism.
+#[derive(Debug, Clone)]
+pub struct Dialog {
+    pub title: String,
+    /// Bold headline line, drawn first.
+    pub headline: Option<(String, Tone)>,
+    /// `label: value` rows rendered as a two-column grid.
+    pub rows: Vec<(String, String)>,
+    /// Titled blocks of pre-formatted lines, for structured detail like a
+    /// per-worker block distribution.
+    pub sections: Vec<(String, Vec<Line<'static>>)>,
+    /// Secondary text under the grid (hints, errors, footnotes).
+    pub notes: Vec<(String, Tone)>,
+    /// Shows the red confirm footer instead of a dismiss footer.
+    pub destructive: bool,
+}
+
+impl Dialog {
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            headline: None,
+            rows: Vec::new(),
+            sections: Vec::new(),
+            notes: Vec::new(),
+            destructive: false,
+        }
+    }
+
+    /// Append a titled block of pre-rendered lines.
+    pub fn section(mut self, title: impl Into<String>, lines: Vec<Line<'static>>) -> Self {
+        self.sections.push((title.into(), lines));
+        self
+    }
+
+    pub fn headline(mut self, text: impl Into<String>, tone: Tone) -> Self {
+        self.headline = Some((text.into(), tone));
+        self
+    }
+
+    pub fn row(mut self, label: impl Into<String>, value: impl Into<String>) -> Self {
+        self.rows.push((label.into(), value.into()));
+        self
+    }
+
+    pub fn note(mut self, text: impl Into<String>, tone: Tone) -> Self {
+        self.notes.push((text.into(), tone));
+        self
+    }
+
+    pub fn destructive(mut self, yes: bool) -> Self {
+        self.destructive = yes;
+        self
+    }
+
+    /// Width the dialog needs, so callers can size the popup to content.
+    pub fn preferred_width(&self) -> u16 {
+        let label_w = self.rows.iter().map(|(l, _)| l.chars().count()).max().unwrap_or(0);
+        let value_w = self.rows.iter().map(|(_, v)| v.chars().count()).max().unwrap_or(0);
+        let headline_w = self
+            .headline
+            .as_ref()
+            .map(|(h, _)| h.chars().count())
+            .unwrap_or(0);
+        let note_w = self.notes.iter().map(|(n, _)| n.chars().count()).max().unwrap_or(0);
+        let section_w = self
+            .sections
+            .iter()
+            .flat_map(|(_, lines)| lines.iter())
+            .map(|l| l.width())
+            .max()
+            .unwrap_or(0);
+        let content = (label_w + value_w + 6)
+            .max(headline_w + 4)
+            .max(note_w + 4)
+            .max(section_w + 4)
+            .max(self.title.chars().count() + 8)
+            .max(40);
+        (content as u16).min(110)
+    }
+
+    /// Exact height the body needs. Counted line by line, because an off-by-one
+    /// here silently clips the confirm footer — which is the one line the user
+    /// has to read before a destructive action.
+    pub fn preferred_height(&self) -> u16 {
+        let mut h = 2; // top + bottom border
+        h += 1; // leading blank
+        if self.headline.is_some() {
+            h += 2; // headline + trailing blank
+        }
+        h += self.rows.len() as u16;
+        for (_, lines) in &self.sections {
+            h += 2; // blank + section title
+            h += lines.len() as u16;
+        }
+        h += self.notes.len() as u16 * 2; // blank + note
+        h += 2; // blank + footer
+        h.max(8)
+    }
+}
+
+/// Render a dialog centred in `area`. Returns the rect it occupied so callers
+/// can layer further content if needed.
+pub fn render_dialog(f: &mut Frame, area: Rect, dlg: &Dialog) -> Rect {
+    let width = dlg.preferred_width().min(area.width.saturating_sub(2)).max(20);
+    let height = dlg
+        .preferred_height()
+        .min(area.height.saturating_sub(2))
+        .max(6);
+    let rect = centre(width, height, area);
+    f.render_widget(Clear, rect);
+
+    let mut lines: Vec<Line> = vec![Line::from("")];
+
+    if let Some((text, tone)) = &dlg.headline {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Tag::solid(text.clone(), *tone).span(),
+        ]));
+        lines.push(Line::from(""));
+    }
+
+    let label_w = dlg.rows.iter().map(|(l, _)| l.chars().count()).max().unwrap_or(0);
+    for (label, value) in &dlg.rows {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {label:<label_w$}  "),
+                Style::default().fg(th::MUTED),
+            ),
+            Span::styled(value.clone(), Style::default().fg(th::TEXT)),
+        ]));
+    }
+
+    for (title, body) in &dlg.sections {
+        lines.push(Line::from(""));
+        lines.push(section(title));
+        lines.extend(body.iter().cloned());
+    }
+
+    for (note, tone) in &dlg.notes {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(note.clone(), Style::default().fg(tone.color())),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    if dlg.destructive {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Tag::solid("enter", Tone::Error).span(),
+            Span::styled(" confirm   ", Style::default().fg(th::MUTED)),
+            Tag::new("esc", Tone::Neutral).span(),
+            Span::styled(" cancel", Style::default().fg(th::MUTED)),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Tag::new("esc", Tone::Neutral).span(),
+            Span::styled(" close", Style::default().fg(th::MUTED)),
+        ]));
+    }
+
+    let border_tone = if dlg.destructive { th::ERROR } else { th::BORDER };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_tone))
+        .title(Span::styled(
+            format!(" {} ", dlg.title),
+            Style::default()
+                .fg(if dlg.destructive { th::ERROR } else { th::ACCENT })
+                .add_modifier(Modifier::BOLD),
+        ));
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .alignment(Alignment::Left),
+        rect,
+    );
+    rect
+}
+
+/// Exact-size rect centred in `area`, clamped to the available space.
+pub fn centre(width: u16, height: u16, area: Rect) -> Rect {
+    let w = width.min(area.width);
+    let h = height.min(area.height);
+    Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    }
 }

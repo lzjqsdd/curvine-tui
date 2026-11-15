@@ -98,45 +98,54 @@ fn render_strip(f: &mut Frame, app: &App, area: Rect) {
 
     match &app.fsck.data {
         Some(s) => {
-            spans.push(Tag::new(format!("{} files", s.file_count), Tone::Info).span());
-            spans.push(Span::raw(" "));
-            spans.push(Tag::new(format!("{} blocks", s.block_count), Tone::Neutral).span());
-            spans.push(Span::raw(" "));
-            spans.push(
-                Tag::new(
-                    format!("{}/{} replicas", s.available_replicas, s.expected_replicas),
-                    if s.available_replicas == s.expected_replicas {
-                        Tone::Ok
-                    } else {
-                        Tone::Warn
-                    },
-                )
-                .span(),
-            );
-            spans.push(Span::raw(" "));
-            if s.under_replicated_blocks > 0 {
-                spans.push(
-                    Tag::solid(
-                        format!("{} under-replicated", s.under_replicated_blocks),
-                        Tone::Warn,
-                    )
-                    .span(),
-                );
-                spans.push(Span::raw(" "));
-            }
-            if s.missing_replica_blocks > 0 {
-                spans.push(
-                    Tag::solid(
-                        format!("{} empty", s.missing_replica_blocks),
-                        Tone::Error,
-                    )
-                    .span(),
-                );
-                spans.push(Span::raw(" "));
-            }
-            if !s.errors.is_empty() {
-                spans.push(Tag::new(format!("{} errors", s.errors.len()), Tone::Error).span());
-            }
+            // The dot colour is the verdict; the label only names the counter.
+            let replica_tone = if s.expected_replicas == 0 {
+                Tone::Neutral
+            } else if s.available_replicas == s.expected_replicas {
+                Tone::Ok
+            } else if s.available_replicas == 0 {
+                Tone::Error
+            } else {
+                Tone::Warn
+            };
+            let counter = |tone: Tone, text: String| -> Vec<Span<'static>> {
+                vec![
+                    components::dot(tone),
+                    Span::raw(" "),
+                    Span::styled(text, Style::default().fg(th::TEXT)),
+                    Span::raw("   "),
+                ]
+            };
+            spans.extend(counter(Tone::Info, format!("{} files", s.file_count)));
+            spans.extend(counter(Tone::Neutral, format!("{} blocks", s.block_count)));
+            spans.extend(counter(
+                replica_tone,
+                format!("{}/{} replicas", s.available_replicas, s.expected_replicas),
+            ));
+            spans.extend(counter(
+                if s.under_replicated_blocks == 0 {
+                    Tone::Ok
+                } else {
+                    Tone::Warn
+                },
+                format!("{} under-replicated", s.under_replicated_blocks),
+            ));
+            spans.extend(counter(
+                if s.missing_replica_blocks == 0 {
+                    Tone::Neutral
+                } else {
+                    Tone::Error
+                },
+                format!("{} empty", s.missing_replica_blocks),
+            ));
+            spans.extend(counter(
+                if s.errors.is_empty() {
+                    Tone::Neutral
+                } else {
+                    Tone::Error
+                },
+                format!("{} errors", s.errors.len()),
+            ));
         }
         None => spans.push(Span::styled(
             " no report yet",
@@ -238,9 +247,9 @@ fn render_bad_files(f: &mut Frame, app: &App, area: Rect) {
                             "—".to_string()
                         }),
                         Cell::from(if f.expected > 0 {
-                            Tag::new(format!("{}/{}", f.available, f.expected), tone).cell()
+                            components::dot_label(tone, format!("{}/{}", f.available, f.expected))
                         } else {
-                            Tag::new("n/a", Tone::Neutral).cell()
+                            components::dot_label(Tone::Neutral, "n/a")
                         }),
                         Cell::from(issue_span).style(Style::default().fg(tone.color())),
                     ])

@@ -33,6 +33,10 @@ pub enum TaskResult {
     Config(Result<Vec<ConfigRow>, String>),
     Fsck(Box<Result<FsckSnapshot, String>>),
     Bench(Box<Result<BenchSnapshot, String>>),
+    Describe {
+        path: String,
+        blocks: Result<Vec<BlockRow>, String>,
+    },
     TransferProgress {
         id: u64,
         transferred: u64,
@@ -82,7 +86,13 @@ pub struct ClusterSnapshot {
 
 #[derive(Debug, Clone)]
 pub struct WorkerRow {
+    /// `ip:rpc_port` — the identifying endpoint, not the verbose Display form.
     pub address: String,
+    pub ip: String,
+    pub hostname: String,
+    pub rpc_port: u32,
+    pub web_port: u32,
+    pub worker_id: u32,
     pub status: String,
     pub capacity: i64,
     pub available: i64,
@@ -90,6 +100,8 @@ pub struct WorkerRow {
     pub block_num: i64,
     pub weight: u32,
     pub version: String,
+    /// `(storage class, capacity bytes)` for the per-disk breakdown.
+    pub storage: Vec<(String, i64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -172,6 +184,19 @@ pub struct BenchRowData {
     pub p95: f64,
     pub p99: f64,
     pub errors: u64,
+}
+
+/// One replica of one block, flattened for the UI.
+#[derive(Debug, Clone)]
+pub struct BlockRow {
+    pub block_id: String,
+    pub offset: i64,
+    pub len: i64,
+    /// `ip:port` of the holding worker.
+    pub worker: String,
+    pub available: bool,
+    /// Worker status at the time of the query (`Live`, `Lost`, …).
+    pub state: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

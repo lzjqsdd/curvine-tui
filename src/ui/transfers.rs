@@ -87,7 +87,10 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 "—".to_string()
             }));
-            cells.push(Cell::from(state_tag(t.state).cell()));
+            cells.push(Cell::from(components::dot_label(
+                tone_for_transfer(t.state),
+                t.state.label(),
+            )));
             Row::new(cells)
         })
         .collect();
@@ -131,15 +134,14 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(table, area, &mut state);
 }
 
-fn state_tag(s: TransferState) -> Tag {
-    let tone = match s {
+fn tone_for_transfer(s: TransferState) -> Tone {
+    match s {
         TransferState::Done => Tone::Ok,
         TransferState::Failed => Tone::Error,
         TransferState::Cancelled => Tone::Neutral,
         TransferState::Running => Tone::Accent,
         TransferState::Queued => Tone::Warn,
-    };
-    Tag::new(s.label(), tone)
+    }
 }
 
 fn render_active_gauge(f: &mut Frame, app: &App, area: Rect) {
@@ -156,7 +158,13 @@ fn render_active_gauge(f: &mut Frame, app: &App, area: Rect) {
     };
 
     if t.state.is_terminal() {
-        let mut spans = vec![Span::raw(" "), state_tag(t.state).span(), Span::raw(" ")];
+        let mut spans = vec![
+            Span::raw(" "),
+            components::dot(tone_for_transfer(t.state)),
+            Span::raw(" "),
+            Span::styled(t.state.label(), Style::default().fg(tone_for_transfer(t.state).color())),
+            Span::raw(" "),
+        ];
         spans.push(Span::styled(
             format!("#{} ", t.id),
             Style::default().fg(th::MUTED),
@@ -220,16 +228,21 @@ fn render_counters(f: &mut Frame, app: &App, area: Rect) {
         .map(|t| t.transferred)
         .sum();
 
-    let spans = vec![
+    let counter = |tone: Tone, n: usize, label: &str| -> Vec<Span<'static>> {
+        vec![
+            components::dot(if n > 0 { tone } else { Tone::Neutral }),
+            Span::raw(" "),
+            Span::styled(format!("{n} {label}"), Style::default().fg(th::MUTED)),
+            Span::raw("   "),
+        ]
+    };
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(counter(Tone::Accent, count(TransferState::Running), "running"));
+    spans.extend(counter(Tone::Warn, count(TransferState::Queued), "queued"));
+    spans.extend(counter(Tone::Ok, count(TransferState::Done), "done"));
+    spans.extend(counter(Tone::Error, count(TransferState::Failed), "failed"));
+    spans.extend(vec![
         Span::raw(" "),
-        Tag::solid(format!("{} running", count(TransferState::Running)), Tone::Accent).span(),
-        Span::raw(" "),
-        Tag::new(format!("{} queued", count(TransferState::Queued)), Tone::Warn).span(),
-        Span::raw(" "),
-        Tag::new(format!("{} done", count(TransferState::Done)), Tone::Ok).span(),
-        Span::raw(" "),
-        Tag::new(format!("{} failed", count(TransferState::Failed)), Tone::Error).span(),
-        Span::raw("   "),
         Span::styled("↑ ", Style::default().fg(th::WARN)),
         Span::styled(
             human_bytes(bytes_up as i64),
@@ -240,7 +253,7 @@ fn render_counters(f: &mut Frame, app: &App, area: Rect) {
             human_bytes(bytes_down as i64),
             Style::default().fg(th::TEXT),
         ),
-    ];
+    ]);
 
     f.render_widget(
         Paragraph::new(Line::from(spans)).block(components::panel_block("queue")),
