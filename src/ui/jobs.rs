@@ -1,90 +1,46 @@
-//! Mount table, job list and runtime config views.
+//! Job list, transfer queue, runtime config — all table-driven with badges.
 
 use ratatui::{
-    layout::{Constraint, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
-    widgets::{Cell, Row, Table},
+    text::{Line, Span},
+    widgets::{Cell, Paragraph, Row, Table, TableState},
     Frame,
 };
 
-use super::{components, theme as th};
+use super::{
+    components::{self, bar_with_pct, kv_line, Tag, Tone},
+    human_bytes, theme as th,
+};
 use crate::app::App;
 
-pub fn render_mounts(f: &mut Frame, app: &App, area: Rect) {
-    let header = Row::new(vec![
-        Cell::from("cv path"),
-        Cell::from("ufs path"),
-        Cell::from("id"),
-        Cell::from("storage"),
-        Cell::from("write"),
-        Cell::from("provider"),
-        Cell::from("ttl(ms)"),
-    ])
-    .style(
-        Style::default()
-            .fg(th::ACCENT_DIM)
-            .add_modifier(Modifier::BOLD),
-    );
-
-    let rows: Vec<Row> = app
-        .mounts
-        .data
-        .as_ref()
-        .map(|list| {
-            list.iter()
-                .map(|m| {
-                    Row::new(vec![
-                        Cell::from(m.cv_path.clone()).style(Style::default().fg(th::DIR)),
-                        Cell::from(m.ufs_path.clone()),
-                        Cell::from(m.mount_id.to_string()),
-                        Cell::from(m.storage_type.clone()),
-                        Cell::from(m.write_type.clone()),
-                        Cell::from(m.provider.clone()),
-                        Cell::from(m.ttl_ms.to_string()),
-                    ])
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let title = match (&app.mounts.data, app.mounts.loading) {
-        (Some(l), _) => format!("mounts — {} entries", l.len()),
-        (None, true) => "mounts — loading…".to_string(),
-        (None, false) => format!(
-            "mounts — {}",
-            app.mounts.error.as_deref().unwrap_or("no data")
-        ),
-    };
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Percentage(24),
-            Constraint::Percentage(32),
-            Constraint::Length(6),
-            Constraint::Length(12),
-            Constraint::Length(12),
-            Constraint::Length(12),
-            Constraint::Min(8),
-        ],
-    )
-    .header(header)
-    .block(components::panel_block(&title))
-    .column_spacing(1);
-
-    f.render_widget(table, area);
-}
+// ------------------------------------------------------------------- jobs
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
-    let header = Row::new(vec![
-        Cell::from("job id"),
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(4), Constraint::Length(3)])
+        .split(area);
+
+    render_jobs_table(f, app, chunks[0]);
+    render_jobs_summary(f, app, chunks[1]);
+}
+
+fn render_jobs_table(f: &mut Frame, app: &App, area: Rect) {
+    let wide = area.width >= 96;
+
+    let mut header_cells = vec![
+        Cell::from("job"),
         Cell::from("state"),
         Cell::from("progress"),
-        Cell::from("files"),
-        Cell::from("source"),
-        Cell::from("target"),
-    ])
-    .style(
+    ];
+    if wide {
+        header_cells.push(Cell::from("files"));
+    }
+    header_cells.push(Cell::from("source"));
+    header_cells.push(Cell::from("target"));
+
+    let header = Row::new(header_cells).style(
         Style::default()
             .fg(th::ACCENT_DIM)
             .add_modifier(Modifier::BOLD),
@@ -97,21 +53,21 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         .map(|list| {
             list.iter()
                 .map(|j| {
-                    let pct = j.progress * 100.0;
-                    let state_style = match j.state.as_str() {
-                        s if s.contains("Complete") => Style::default().fg(th::OK),
-                        s if s.contains("Fail") => Style::default().fg(th::ERROR),
-                        s if s.contains("Run") => Style::default().fg(th::ACCENT),
-                        _ => Style::default().fg(th::MUTED),
-                    };
-                    Row::new(vec![
-                        Cell::from(short_id(&j.job_id)),
-                        Cell::from(j.state.clone()).style(state_style),
-                        Cell::from(format!("{pct:.0}%")),
-                        Cell::from(format!("{}/{}", j.completed, j.total_files)),
-                        Cell::from(j.source.clone()),
-                        Cell::from(j.target.clone()),
-                    ])
+                    let mut cells = vec![
+                        Cell::from(short_id(&j.job_id)).style(Style::default().fg(th::MUTED)),
+                        Cell::from(Tag::from_status(&j.state).cell()),
+                        Cell::from(bar_with_pct(j.progress, 13))
+                            .style(Style::default().fg(th::usage_tone(1.0 - j.progress).color())),
+                    ];
+                    if wide {
+                        cells.push(Cell::from(format!(
+                            "{}/{}",
+                            j.completed, j.total_files
+                        )));
+                    }
+                    cells.push(Cell::from(j.source.clone()));
+                    cells.push(Cell::from(j.target.clone()));
+                    Row::new(cells)
                 })
                 .collect()
         })
@@ -119,45 +75,110 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 
     let title = match (&app.jobs.data, app.jobs.loading) {
         (Some(l), _) => format!("jobs — {} entries", l.len()),
-        (None, true) => "jobs — loading…".to_string(),
+        (None, true) => format!("jobs — {} loading", components::live_spinner()),
         (None, false) => format!("jobs — {}", app.jobs.error.as_deref().unwrap_or("no data")),
     };
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(14),
-            Constraint::Length(12),
-            Constraint::Length(8),
-            Constraint::Length(12),
-            Constraint::Percentage(28),
-            Constraint::Min(20),
-        ],
-    )
-    .header(header)
-    .block(components::panel_block(&title))
-    .column_spacing(1);
+    let mut widths = vec![
+        Constraint::Length(14),
+        Constraint::Length(12),
+        Constraint::Length(14),
+    ];
+    if wide {
+        widths.push(Constraint::Length(12));
+    }
+    widths.push(Constraint::Percentage(28));
+    widths.push(Constraint::Min(20));
 
-    f.render_widget(table, area);
+    let mut state = TableState::default();
+    if !rows.is_empty() {
+        state.select(Some(0));
+    }
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(components::panel_block(&title))
+        .row_highlight_style(
+            Style::default()
+                .bg(th::SELECTED_BG)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ")
+        .column_spacing(1);
+
+    f.render_stateful_widget(table, area, &mut state);
 }
 
+fn render_jobs_summary(f: &mut Frame, app: &App, area: Rect) {
+    let mut spans = vec![Span::raw(" ")];
+
+    if let Some(list) = &app.jobs.data {
+        let running = list
+            .iter()
+            .filter(|j| j.state.to_ascii_lowercase().contains("run"))
+            .count();
+        let done = list
+            .iter()
+            .filter(|j| j.state.to_ascii_lowercase().contains("complete"))
+            .count();
+        let failed = list
+            .iter()
+            .filter(|j| j.state.to_ascii_lowercase().contains("fail"))
+            .count();
+
+        spans.push(Tag::solid(format!("{running} running"), Tone::Accent).span());
+        spans.push(Span::raw(" "));
+        spans.push(Tag::new(format!("{done} complete"), Tone::Ok).span());
+        spans.push(Span::raw(" "));
+        spans.push(Tag::new(format!("{failed} failed"), Tone::Error).span());
+        spans.push(Span::raw("   "));
+        spans.push(Span::styled(
+            "load jobs stream progress from the job master",
+            Style::default().fg(th::MUTED),
+        ));
+    } else {
+        spans.push(Span::styled(
+            "no job data",
+            Style::default().fg(th::MUTED),
+        ));
+    }
+
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).block(components::panel_block("summary")),
+        area,
+    );
+}
+
+// ------------------------------------------------------------------- config
+
 pub fn render_config(f: &mut Frame, app: &App, area: Rect) {
-    let header = Row::new(vec![Cell::from("key"), Cell::from("value")]).style(
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(4), Constraint::Length(3)])
+        .split(area);
+
+    let header = Row::new(vec![Cell::from("key"), Cell::from("effective value")]).style(
         Style::default()
             .fg(th::ACCENT_DIM)
             .add_modifier(Modifier::BOLD),
     );
 
+    let filter = app.config_filter.to_ascii_lowercase();
     let rows: Vec<Row> = app
         .config
         .data
         .as_ref()
         .map(|list| {
             list.iter()
+                .filter(|c| {
+                    filter.is_empty()
+                        || c.key.to_ascii_lowercase().contains(&filter)
+                        || c.value.to_ascii_lowercase().contains(&filter)
+                })
                 .map(|c| {
                     Row::new(vec![
                         Cell::from(c.key.clone()).style(Style::default().fg(th::DIR)),
-                        Cell::from(c.value.clone()),
+                        Cell::from(c.value.clone()).style(Style::default().fg(th::TEXT)),
                     ])
                 })
                 .collect()
@@ -165,23 +186,50 @@ pub fn render_config(f: &mut Frame, app: &App, area: Rect) {
         .unwrap_or_default();
 
     let title = match (&app.config.data, app.config.loading) {
-        (Some(l), _) => format!("runtime config — {} keys", l.len()),
-        (None, true) => "runtime config — loading…".to_string(),
+        (Some(l), _) => format!(
+            "runtime config — {} keys{}",
+            l.len(),
+            if filter.is_empty() {
+                String::new()
+            } else {
+                format!(" · {} shown", rows.len())
+            }
+        ),
+        (None, true) => format!("runtime config — {} loading", components::live_spinner()),
         (None, false) => format!(
             "runtime config — {}",
             app.config.error.as_deref().unwrap_or("no data")
         ),
     };
 
-    let table = Table::new(
-        rows,
-        [Constraint::Percentage(40), Constraint::Min(30)],
-    )
-    .header(header)
-    .block(components::panel_block(&title))
-    .column_spacing(1);
+    let shown = rows.len();
+    let table = Table::new(rows, [Constraint::Percentage(42), Constraint::Min(30)])
+        .header(header)
+        .block(components::panel_block(&title))
+        .column_spacing(1);
 
-    f.render_widget(table, area);
+    f.render_widget(table, chunks[0]);
+
+    let spans = vec![
+        Span::raw(" "),
+        if filter.is_empty() {
+            Span::styled(
+                "press / to filter keys",
+                Style::default().fg(th::MUTED),
+            )
+        } else {
+            Tag::new(format!("filter {filter}"), Tone::Warn).span()
+        },
+        Span::raw("   "),
+        Span::styled(
+            format!("{shown} entries"),
+            Style::default().fg(th::MUTED),
+        ),
+    ];
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).block(components::panel_block("filter")),
+        chunks[1],
+    );
 }
 
 fn short_id(id: &str) -> String {
@@ -190,4 +238,20 @@ fn short_id(id: &str) -> String {
     } else {
         id.to_string()
     }
+}
+
+/// Shared free/used cell helper.
+#[allow(dead_code)]
+fn space_cell(used: i64, total: i64) -> Cell<'static> {
+    let r = if total <= 0 {
+        0.0
+    } else {
+        used as f64 / total as f64
+    };
+    Cell::from(human_bytes(used)).style(Style::default().fg(th::usage_tone(r).color()))
+}
+
+#[allow(dead_code)]
+fn demo_kv() -> Line<'static> {
+    kv_line("key", "value", Tone::Neutral, 12)
 }

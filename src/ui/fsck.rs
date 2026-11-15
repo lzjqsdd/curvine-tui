@@ -1,5 +1,4 @@
-//! Replica-health panel. Shows an aggregate verdict plus only the unhealthy
-//! files, since a clean tree would otherwise be thousands of identical rows.
+//! Replica-health panel: verdict gauge, stat badges, unhealthy-file table.
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -9,113 +8,187 @@ use ratatui::{
     Frame,
 };
 
-use super::{components, human_bytes, theme as th};
+use super::{
+    components::{self, bar_with_pct, kv_line, Tag, Tone},
+    human_bytes, theme as th,
+};
 use crate::app::App;
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Length(7), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(3), // verdict gauge
+            Constraint::Length(3), // stat badge strip
+            Constraint::Length(7), // numeric summary
+            Constraint::Min(3),    // unhealthy files
+        ])
         .split(area);
 
     render_verdict(f, app, rows[0]);
-    render_stats(f, app, rows[1]);
-    render_bad_files(f, app, rows[2]);
+    render_strip(f, app, rows[1]);
+    render_summary(f, app, rows[2]);
+    render_bad_files(f, app, rows[3]);
 }
 
 fn render_verdict(f: &mut Frame, app: &App, area: Rect) {
     if let (Some(s), false) = (&app.fsck.data, app.fsck.loading) {
-        // A Gauge centres its label over the bar, so keep this to the headline
-        // and let `summary` carry the breakdown.
-        let (text, color) = if !s.warnings {
-            ("healthy".to_string(), th::OK)
-        } else {
-            ("degraded".to_string(), th::ERROR)
-        };
-        let detail = format!(
-            " {text} — {:.0}% of {:.0} replicas available ",
-            s.health_ratio * 100.0,
-            s.expected_replicas
+        let tone = if !s.warnings { Tone::Ok } else { Tone::Error };
+        let headline = if s.warnings { "degraded" } else { "healthy" };
+        components::render_usage(
+            f,
+            area,
+            &format!("fsck {}", s.root),
+            s.health_ratio,
+            format!(
+                "{headline}   {:.1}% of {:.0} replicas available   ·   {} ms",
+                s.health_ratio * 100.0,
+                s.expected_replicas,
+                s.elapsed_ms
+            ),
+            tone,
         );
-
-        let g = ratatui::widgets::Gauge::default()
-            .block(components::panel_block(&format!("fsck {}", s.root)))
-            .gauge_style(Style::default().fg(th::usage_color(1.0 - s.health_ratio)))
-            .ratio(s.health_ratio)
-            .label(Span::styled(detail, Style::default().fg(color).add_modifier(Modifier::BOLD)));
-        f.render_widget(g, area);
         return;
     }
 
-    let msg = if app.fsck.loading {
-        format!(
-            "{} scanning {} … ({} to cancel)",
-            components::spinner(0),
-            app.fsck_path,
-            "x"
+    let (line, tone) = if app.fsck.loading {
+        (
+            Line::from(vec![
+                Span::styled(
+                    format!(" {} ", components::live_spinner()),
+                    Style::default().fg(th::ACCENT),
+                ),
+                Span::styled(
+                    format!("scanning {} … press x to cancel", app.fsck_path),
+                    Style::default().fg(th::MUTED),
+                ),
+            ]),
+            Tone::Neutral,
         )
     } else if let Some(err) = &app.fsck.error {
-        err.clone()
+        (
+            Line::from(vec![
+                Tag::solid("failed", Tone::Error).span(),
+                Span::styled(format!(" {err}"), Style::default().fg(th::ERROR)),
+            ]),
+            Tone::Error,
+        )
     } else {
-        "press enter to scan, f to target the browsed directory".to_string()
+        (
+            Line::from(vec![
+                Tag::new("idle", Tone::Neutral).span(),
+                Span::styled(
+                    " press enter to scan · f targets the browsed directory",
+                    Style::default().fg(th::MUTED),
+                ),
+            ]),
+            Tone::Neutral,
+        )
     };
+    let _ = tone;
+
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!(" {msg}"),
-            Style::default().fg(if app.fsck.error.is_some() {
-                th::ERROR
-            } else {
-                th::MUTED
-            }),
-        )))
-        .block(components::panel_block(&format!("fsck {}", app.fsck_path))),
+        Paragraph::new(line).block(components::panel_block(&format!("fsck {}", app.fsck_path))),
         area,
     );
 }
 
-fn render_stats(f: &mut Frame, app: &App, area: Rect) {
+fn render_strip(f: &mut Frame, app: &App, area: Rect) {
+    let mut spans = vec![Span::raw(" ")];
+
+    match &app.fsck.data {
+        Some(s) => {
+            spans.push(Tag::new(format!("{} files", s.file_count), Tone::Info).span());
+            spans.push(Span::raw(" "));
+            spans.push(Tag::new(format!("{} blocks", s.block_count), Tone::Neutral).span());
+            spans.push(Span::raw(" "));
+            spans.push(
+                Tag::new(
+                    format!("{}/{} replicas", s.available_replicas, s.expected_replicas),
+                    if s.available_replicas == s.expected_replicas {
+                        Tone::Ok
+                    } else {
+                        Tone::Warn
+                    },
+                )
+                .span(),
+            );
+            spans.push(Span::raw(" "));
+            if s.under_replicated_blocks > 0 {
+                spans.push(
+                    Tag::solid(
+                        format!("{} under-replicated", s.under_replicated_blocks),
+                        Tone::Warn,
+                    )
+                    .span(),
+                );
+                spans.push(Span::raw(" "));
+            }
+            if s.missing_replica_blocks > 0 {
+                spans.push(
+                    Tag::solid(
+                        format!("{} empty", s.missing_replica_blocks),
+                        Tone::Error,
+                    )
+                    .span(),
+                );
+                spans.push(Span::raw(" "));
+            }
+            if !s.errors.is_empty() {
+                spans.push(Tag::new(format!("{} errors", s.errors.len()), Tone::Error).span());
+            }
+        }
+        None => spans.push(Span::styled(
+            " no report yet",
+            Style::default().fg(th::MUTED),
+        )),
+    }
+
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).block(components::panel_block("verdict")),
+        area,
+    );
+}
+
+fn render_summary(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
     match &app.fsck.data {
         Some(s) => {
-            let kv = |k: &str, v: String| {
-                Line::from(vec![
-                    Span::styled(format!("  {k:<20}"), Style::default().fg(th::MUTED)),
-                    Span::styled(v, Style::default().fg(th::TEXT)),
-                ])
-            };
-            lines.push(kv("scanned", format!("{} ms", s.elapsed_ms)));
-            lines.push(kv(
-                "files / blocks",
-                format!("{} / {}", s.file_count, s.block_count),
-            ));
-            lines.push(kv(
+            lines.push(kv_line("scanned", s.root.clone(), Tone::Info, 20));
+            lines.push(kv_line(
                 "replicas recorded",
                 format!("{} (expected {})", s.recorded_replicas, s.expected_replicas),
+                Tone::Neutral,
+                20,
             ));
-            lines.push(kv(
+            lines.push(kv_line(
                 "replicas available",
                 format!(
                     "{} ({} unavailable)",
                     s.available_replicas, s.unavailable_replicas
                 ),
+                if s.unavailable_replicas == 0 {
+                    Tone::Ok
+                } else {
+                    Tone::Warn
+                },
+                20,
             ));
-            let issues = format!(
-                "{} under-replicated, {} with no replica, {} scan errors",
-                s.under_replicated_blocks,
-                s.missing_replica_blocks,
-                s.errors.len()
-            );
+            let r = s.health_ratio;
             lines.push(Line::from(vec![
-                Span::styled("  issues              ", Style::default().fg(th::MUTED)),
                 Span::styled(
-                    issues,
-                    Style::default().fg(if s.warnings { th::WARN } else { th::OK }),
+                    format!("  {:<20}", "health"),
+                    Style::default().fg(th::MUTED),
+                ),
+                Span::styled(
+                    bar_with_pct(r, 20),
+                    Style::default().fg(th::usage_tone(1.0 - r).color()),
                 ),
             ]));
         }
         None => lines.push(Line::from(Span::styled(
-            "  no report yet",
+            "  run a scan to populate this panel",
             Style::default().fg(th::MUTED),
         ))),
     }
@@ -140,38 +213,54 @@ fn render_bad_files(f: &mut Frame, app: &App, area: Rect) {
             .add_modifier(Modifier::BOLD),
     );
 
-    let (rows, title): (Vec<Row>, String) = match &app.fsck.data {
+    let (rows, title, tone): (Vec<Row>, String, Tone) = match &app.fsck.data {
         Some(s) if !s.bad_files.is_empty() => (
             s.bad_files
                 .iter()
                 .map(|f| {
-                    let issue = f
-                        .error
-                        .clone()
-                        .unwrap_or_else(|| format!("{} of {} replicas", f.available, f.expected));
+                    let (issue_span, tone) = match &f.error {
+                        Some(err) => (err.clone(), Tone::Error),
+                        None => (
+                            format!("{} of {} replicas available", f.available, f.expected),
+                            Tone::Warn,
+                        ),
+                    };
                     Row::new(vec![
                         Cell::from(f.path.clone()).style(Style::default().fg(th::TEXT)),
-                        Cell::from(human_bytes(f.len)),
-                        Cell::from(f.blocks.to_string()),
-                        Cell::from(format!("{}/{}", f.available, f.expected))
-                            .style(Style::default().fg(th::ERROR)),
-                        Cell::from(issue).style(Style::default().fg(th::WARN)),
+                        Cell::from(if f.len > 0 {
+                            human_bytes(f.len)
+                        } else {
+                            "—".to_string()
+                        }),
+                        Cell::from(if f.blocks > 0 {
+                            f.blocks.to_string()
+                        } else {
+                            "—".to_string()
+                        }),
+                        Cell::from(if f.expected > 0 {
+                            Tag::new(format!("{}/{}", f.available, f.expected), tone).cell()
+                        } else {
+                            Tag::new("n/a", Tone::Neutral).cell()
+                        }),
+                        Cell::from(issue_span).style(Style::default().fg(tone.color())),
                     ])
                 })
                 .collect(),
-            format!("unhealthy files ({})", s.bad_files.len()),
+            format!("unhealthy files — {}", s.bad_files.len()),
+            Tone::Error,
         ),
         Some(_) => (
             Vec::new(),
             "unhealthy files — none, every replica is available".to_string(),
+            Tone::Ok,
         ),
-        None => (Vec::new(), "unhealthy files".to_string()),
+        None => (Vec::new(), "unhealthy files".to_string(), Tone::Neutral),
     };
 
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(46),
+            Constraint::Percentage(44),
             Constraint::Length(10),
             Constraint::Length(8),
             Constraint::Length(10),
@@ -179,7 +268,17 @@ fn render_bad_files(f: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(header)
-    .block(components::panel_block(&title))
+    .block(components::panel_block_badged(
+        &title,
+        Tag::new(
+            match tone {
+                Tone::Ok => "clean",
+                Tone::Error => "action needed",
+                _ => "—",
+            },
+            tone,
+        ),
+    ))
     .column_spacing(1);
 
     f.render_widget(table, area);

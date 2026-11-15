@@ -15,7 +15,7 @@ data layer wired directly into curvine's own crates (`curvine-unified-fs`,
 | Dashboard | `report`, `dfs df` | ✅ capacity gauge, inode/block counts, live worker table |
 | Files | `fs ls`, `mkdir`, `rm`, `mv` | ✅ browse, filter, mkdir, delete |
 | Nodes | `node` | ✅ per-worker capacity, usage %, blocks |
-| Mounts | `mount`, `umount` | ✅ read-only table (mount/umount pending) |
+| Mounts | `mount`, `umount` | ✅ mount form, unmount confirm, mode/storage badges |
 | Jobs | `load-list`, `load-status`, `transfer` | ✅ list + progress (cancel pending) |
 | Transfers | `fs put`, `fs get` | ✅ live progress bars, per-file speed, cancel |
 | Fsck | `fsck` | ✅ recursive replica scan, unhealthy-file drill-down |
@@ -23,8 +23,16 @@ data layer wired directly into curvine's own crates (`curvine-unified-fs`,
 | Config | `admin config` | ✅ runtime config viewer |
 | Command line | all of the above | ✅ `:` prompt with CLI-style syntax |
 
-Not yet wired: `cat` viewer, `export`, `transfer` submission, `mount`/`umount`
-mutations, `chmod`/`chown`, `du`/`count`, `bench prefill`.
+Not yet wired: `cat` viewer, `export`, `transfer` submission, `chmod`/`chown`,
+`du`/`count`, `bench prefill`, `mount --check-path-consist` and resync.
+
+### Mounts
+
+`n` opens a form covering write mode (cache/fs), storage class, TTL, auto-cache
+and read-verify; unmounting requires an explicit confirmation because cached
+data on that mount becomes unreachable. Verified against a live cluster:
+mounting a local `file://` UFS makes it appear in the table, and unmounting
+removes it.
 
 ### Fsck
 
@@ -76,6 +84,7 @@ Options mirror the CLI's precedence rules (`--conf` > `CURVINE_CONF_FILE` > defa
 | `m` | create directory |
 | `d` / `D` | delete / delete recursive |
 | `p` / `g` | upload / download (put / get form) |
+| `n` / `u` | new mount (form) / unmount selection (confirm) |
 | `enter` (Fsck) | scan; `f` targets the browsed directory; `x` cancels |
 | `enter` (Bench) | run; `p`/`t`/`d` tune profile/threads/duration |
 | `x` | cancel selected transfer |
@@ -93,14 +102,15 @@ src/
 ├── app.rs         state + reducer (all key handling lives here)
 ├── config.rs      ClusterConf loading with CLI overrides
 ├── event.rs       input thread, tick thread, async task results
-├── rpc/           async facade over UnifiedFileSystem + JobMasterClient
+├── ui/components.rs  shared widgets (tags, bars, inputs, popups, help)
 │   ├── fsck.rs    recursive replica scan
 │   └── bench.rs   benchmark harness wrapper
 ├── transfer.rs    streaming upload/download with throttled progress
 ├── ui/
 │   ├── mod.rs     frame layout, shared formatters
-│   ├── theme.rs   palette
-│   ├── components.rs  block/gauge/spinner/help widgets
+│   ├── theme.rs   palette + usage thresholds
+│   ├── components.rs  tags, bars, KV lines, inputs, popups
+│   ├── mounts.rs      mount table + mount form + unmount confirm
 │   ├── transfers.rs   progress table + put/get form
 │   ├── fsck.rs        health verdict + unhealthy files
 │   ├── bench.rs       knobs + metrics table
@@ -119,6 +129,8 @@ integration tests validate them:
 
 ```bash
 curvine-tui --probe                                  # connectivity + cluster dump
+CURVINE_TUI_PROBE_MOUNT='ufs|cv' curvine-tui --probe  # mount
+CURVINE_TUI_PROBE_UMOUNT='/cv' curvine-tui --probe    # unmount
 curvine-tui --put /local/file.bin /remote/file.bin   # streaming upload
 curvine-tui --get /remote/file.bin /local/file.bin   # streaming download
 ```
@@ -144,4 +156,21 @@ CURVINE_TUI_LIVE=1 CURVINE_CONF_FILE=/path/to/curvine-cluster.toml \
 ```
 
 They cover probe health, byte-identical upload/download round-trips, a clean
-failure for a missing remote file, fsck health, and benchmark metrics.
+failure for a missing remote file, fsck health, benchmark metrics, mount/umount
+round-trips, and a clean failure when unmounting something that is not mounted.
+
+## Visual language
+
+Panels share one widget vocabulary so the UI reads consistently:
+
+| Control | Usage |
+|---|---|
+| **Tag** | state badges — `Live`, `done`, `degraded`, `0/5`. Tonal (`Neutral`/`Accent`/`Ok`/`Warn`/`Error`/`Info`) and either outlined or solid. `Tag::from_status` maps an arbitrary enum string onto a tone, so new states need no extra plumbing. |
+| **Bar** | eighth-block progress (`▏▎▍▌▋▊▉`) so short bars keep sub-cell precision; `bar_with_pct` adds a right-aligned percentage. |
+| **Gauge** | full-width capacity/health/progress meter in a bordered block. |
+| **KV line** | `label  value` with a muted label so values carry the weight. |
+| **Input / Choice / Toggle** | the three form control styles used by the mount and transfer forms. |
+| **Badged panel title** | `mounts — 3 entries  [2 stale]`. |
+
+Every panel also reserves a bottom strip for selection detail or queue counters,
+so the same shape repeats across Files, Mounts, Transfers and Fsck.

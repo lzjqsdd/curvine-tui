@@ -1,4 +1,4 @@
-//! Benchmark panel: knob summary, run state, and the results table.
+//! Benchmark panel: knob bar, run state, and results with relative magnitude bars.
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -8,13 +8,19 @@ use ratatui::{
     Frame,
 };
 
-use super::{components, theme as th};
+use super::{
+    components::{self, bar, Tag, Tone},
+    theme as th,
+};
 use crate::app::App;
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(3), // knobs + state
+            Constraint::Min(4),    // results
+        ])
         .split(area);
 
     render_config(f, app, rows[0]);
@@ -30,36 +36,38 @@ fn render_config(f: &mut Frame, app: &App, area: Rect) {
     let duration = o
         .duration_ms
         .map(|d| format!("{}s", d / 1000))
-        .unwrap_or_else(|| "unbounded".to_string());
+        .unwrap_or_else(|| "∞".to_string());
 
     let state = if let Some(started) = app.bench_running {
-        Span::styled(
-            format!("{} running {}s", components::spinner(0), started.elapsed().as_secs()),
-            Style::default().fg(th::ACCENT),
+        Tag::solid(
+            format!(" {} running {}s ", components::live_spinner(), started.elapsed().as_secs()),
+            Tone::Accent,
         )
     } else if app.bench.error.is_some() {
-        Span::styled("failed", Style::default().fg(th::ERROR))
+        Tag::solid("failed", Tone::Error)
     } else if app.bench.data.is_some() {
-        Span::styled("done", Style::default().fg(th::OK))
+        Tag::solid("done", Tone::Ok)
     } else {
-        Span::styled("idle — enter to run", Style::default().fg(th::MUTED))
+        Tag::new("idle", Tone::Neutral)
     };
 
-    let line = Line::from(vec![
-        Span::styled("  profile ", Style::default().fg(th::MUTED)),
-        Span::styled(format!("{profile:<6}"), Style::default().fg(th::TEXT)),
+    let spans = vec![
+        Span::raw(" "),
+        Span::styled("profile ", Style::default().fg(th::MUTED)),
+        Tag::new(profile, Tone::Info).span(),
+        Span::raw(" "),
         Span::styled("threads ", Style::default().fg(th::MUTED)),
-        Span::styled(format!("{:<3}", o.threads), Style::default().fg(th::TEXT)),
+        Tag::new(o.threads.to_string(), Tone::Neutral).span(),
+        Span::raw(" "),
         Span::styled("duration ", Style::default().fg(th::MUTED)),
-        Span::styled(format!("{duration:<10}"), Style::default().fg(th::TEXT)),
-        state,
-    ]);
+        Tag::new(duration, Tone::Neutral).span(),
+        Span::raw("  "),
+        state.span(),
+    ];
 
     f.render_widget(
-        Paragraph::new(line).block(components::panel_block(&format!(
-            "bench — {}",
-            o.base_path
-        ))),
+        Paragraph::new(Line::from(spans))
+            .block(components::panel_block(&format!("bench — {}", o.base_path))),
         area,
     );
 }
@@ -69,6 +77,7 @@ fn render_results(f: &mut Frame, app: &App, area: Rect) {
         Cell::from("op"),
         Cell::from("metric"),
         Cell::from("value"),
+        Cell::from("mag"),
         Cell::from("p50"),
         Cell::from("p95"),
         Cell::from("p99"),
@@ -80,6 +89,15 @@ fn render_results(f: &mut Frame, app: &App, area: Rect) {
             .add_modifier(Modifier::BOLD),
     );
 
+    // Normalise every metric against the largest value in the run so the bars
+    // convey relative magnitude (ops/s and MiB/s cannot share an axis).
+    let max_value = app
+        .bench
+        .data
+        .as_ref()
+        .map(|s| s.rows.iter().map(|r| r.value).fold(0.0_f64, f64::max))
+        .unwrap_or(0.0);
+
     let rows: Vec<Row> = app
         .bench
         .data
@@ -88,20 +106,27 @@ fn render_results(f: &mut Frame, app: &App, area: Rect) {
             s.rows
                 .iter()
                 .map(|r| {
-                    let err_style = if r.errors > 0 {
-                        Style::default().fg(th::ERROR)
+                    let rel = if max_value > 0.0 {
+                        (r.value / max_value).clamp(0.0, 1.0)
                     } else {
-                        Style::default().fg(th::MUTED)
+                        0.0
+                    };
+                    let err_tag = if r.errors > 0 {
+                        Tag::new(r.errors.to_string(), Tone::Error)
+                    } else {
+                        Tag::new("0", Tone::Neutral)
                     };
                     Row::new(vec![
                         Cell::from(r.op.clone()).style(Style::default().fg(th::DIR)),
                         Cell::from(r.item.clone()),
                         Cell::from(format!("{:.2} {}", r.value, r.unit))
                             .style(Style::default().fg(th::TEXT)),
-                        Cell::from(format!("{:.3} ms", r.p50)),
-                        Cell::from(format!("{:.3} ms", r.p95)),
-                        Cell::from(format!("{:.3} ms", r.p99)),
-                        Cell::from(r.errors.to_string()).style(err_style),
+                        Cell::from(bar(rel, 10))
+                            .style(Style::default().fg(th::usage_tone(1.0 - rel).color())),
+                        Cell::from(format!("{:.3}", r.p50)),
+                        Cell::from(format!("{:.3}", r.p95)),
+                        Cell::from(format!("{:.3}", r.p99)),
+                        Cell::from(err_tag.cell()),
                     ])
                 })
                 .collect()
@@ -110,11 +135,11 @@ fn render_results(f: &mut Frame, app: &App, area: Rect) {
 
     let title = match (&app.bench.data, app.bench_running.is_some()) {
         (Some(s), _) => format!(
-            "results — {} metrics, {:.0} ms wall",
+            "results — {} metrics, {:.0} ms wall (latency in ms)",
             s.rows.len(),
             s.elapsed_ms
         ),
-        (None, true) => "results — running…".to_string(),
+        (None, true) => format!("results — {} running…", components::live_spinner()),
         (None, false) => format!(
             "results — {}",
             app.bench.error.as_deref().unwrap_or("no run yet")
@@ -125,11 +150,12 @@ fn render_results(f: &mut Frame, app: &App, area: Rect) {
         rows,
         [
             Constraint::Length(12),
-            Constraint::Percentage(34),
+            Constraint::Percentage(26),
             Constraint::Length(18),
-            Constraint::Length(12),
-            Constraint::Length(12),
-            Constraint::Length(12),
+            Constraint::Length(11),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(8),
             Constraint::Min(8),
         ],
     )

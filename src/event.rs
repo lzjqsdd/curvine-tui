@@ -181,6 +181,7 @@ pub enum TransferKind {
 }
 
 impl TransferKind {
+    #[allow(dead_code)]
     pub fn arrow(self) -> &'static str {
         match self {
             TransferKind::Upload => "up",

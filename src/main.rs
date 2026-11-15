@@ -303,6 +303,34 @@ async fn probe(cfg: &AppConfig, client: &ClusterClient) -> i32 {
         }
     }
 
+    if let Ok(spec) = std::env::var("CURVINE_TUI_PROBE_MOUNT") {
+        // format: ufs_path|cv_path
+        let parts: Vec<&str> = spec.split('|').collect();
+        if parts.len() == 2 {
+            let opts = curvine_model::MountOptions::builder()
+                .write_type(curvine_model::WriteType::CacheMode)
+                .ttl_action(curvine_model::TtlAction::Delete)
+                .build();
+            match client.mount(parts[0], parts[1], opts).await {
+                Ok(_) => println!("mount    : OK {} -> {}", parts[0], parts[1]),
+                Err(e) => {
+                    println!("mount    : FAILED {e}");
+                    failed += 1;
+                }
+            }
+        }
+    }
+
+    if let Ok(path) = std::env::var("CURVINE_TUI_PROBE_UMOUNT") {
+        match client.umount(&path).await {
+            Ok(_) => println!("umount   : OK {path}"),
+            Err(e) => {
+                println!("umount   : FAILED {e}");
+                failed += 1;
+            }
+        }
+    }
+
     if std::env::var("CURVINE_TUI_PROBE_FSCK_PATH").ok().is_some() {
         let target = std::env::var("CURVINE_TUI_PROBE_FSCK_PATH").unwrap();
         let cancel = std::sync::atomic::AtomicBool::new(false);

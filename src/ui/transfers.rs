@@ -1,4 +1,4 @@
-//! Transfer panel: per-file progress bars plus a guided put/get form.
+//! Transfer panel: per-file progress bars, direction badges, put/get form.
 
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -8,18 +8,26 @@ use ratatui::{
     Frame,
 };
 
-use super::{components, human_bytes, theme as th};
+use super::{
+    components::{self, bar_with_pct, input_line, section, Tag, Tone},
+    human_bytes, theme as th,
+};
 use crate::app::{App, TransferForm};
 use crate::event::{TransferKind, TransferState};
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(6), Constraint::Length(3)])
+        .constraints([
+            Constraint::Min(5),
+            Constraint::Length(3), // current transfer gauge
+            Constraint::Length(3), // queue counters
+        ])
         .split(area);
 
     render_table(f, app, chunks[0]);
     render_active_gauge(f, app, chunks[1]);
+    render_counters(f, app, chunks[2]);
 
     if let Some(form) = &app.form {
         render_form(f, form, area);
@@ -27,17 +35,18 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_table(f: &mut Frame, app: &App, area: Rect) {
-    let header = Row::new(vec![
-        Cell::from("id"),
-        Cell::from("dir"),
-        Cell::from("source"),
-        Cell::from("target"),
-        Cell::from("progress"),
-        Cell::from("size"),
-        Cell::from("speed"),
-        Cell::from("state"),
-    ])
-    .style(
+    let wide = area.width >= 100;
+
+    let mut header_cells = vec![Cell::from("#"), Cell::from("dir")];
+    if wide {
+        header_cells.push(Cell::from("path"));
+    }
+    header_cells.push(Cell::from("progress"));
+    header_cells.push(Cell::from("size"));
+    header_cells.push(Cell::from("speed"));
+    header_cells.push(Cell::from("state"));
+
+    let header = Row::new(header_cells).style(
         Style::default()
             .fg(th::ACCENT_DIM)
             .add_modifier(Modifier::BOLD),
@@ -48,48 +57,43 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|t| {
             let pct = t.ratio();
-            let state_style = match t.state {
-                TransferState::Done => Style::default().fg(th::OK),
-                TransferState::Failed => Style::default().fg(th::ERROR),
-                TransferState::Cancelled => Style::default().fg(th::MUTED),
-                TransferState::Running => Style::default().fg(th::ACCENT),
-                TransferState::Queued => Style::default().fg(th::MUTED),
-            };
-            // 10-cell textual bar keeps alignment exact inside a table cell.
-            let filled = (pct * 10.0).round() as usize;
-            let bar = format!(
-                "{}{} {:>3.0}%",
-                "█".repeat(filled),
-                "░".repeat(10 - filled),
-                pct * 100.0
-            );
             let (source, target) = match t.kind {
                 TransferKind::Upload => (t.local.clone(), t.remote.clone()),
                 TransferKind::Download => (t.remote.clone(), t.local.clone()),
             };
-            Row::new(vec![
-                Cell::from(format!("#{}", t.id)),
-                Cell::from(t.kind.arrow()).style(Style::default().fg(th::DIR)),
-                Cell::from(source),
-                Cell::from(target),
-                Cell::from(bar).style(Style::default().fg(th::usage_color(pct))),
-                Cell::from(if t.total > 0 {
-                    human_bytes(t.total as i64)
-                } else {
-                    "-".to_string()
-                }),
-                Cell::from(if t.speed > 0 {
-                    format!("{}/s", human_bytes(t.speed as i64))
-                } else {
-                    "-".to_string()
-                }),
-                Cell::from(t.state.label()).style(state_style),
-            ])
+            let (arrow, tone) = match t.kind {
+                TransferKind::Upload => ("up", Tone::Warn),
+                TransferKind::Download => ("down", Tone::Info),
+            };
+
+            let mut cells = vec![
+                Cell::from(format!("#{}", t.id)).style(Style::default().fg(th::MUTED)),
+                Cell::from(Tag::new(arrow, tone).cell()),
+            ];
+            if wide {
+                cells.push(Cell::from(format!("{source} → {target}")));
+            }
+            cells.push(
+                Cell::from(bar_with_pct(pct, 14))
+                    .style(Style::default().fg(th::usage_tone(1.0 - pct).color())),
+            );
+            cells.push(Cell::from(if t.total > 0 {
+                human_bytes(t.total as i64)
+            } else {
+                "—".to_string()
+            }));
+            cells.push(Cell::from(if t.speed > 0 {
+                format!("{}/s", human_bytes(t.speed as i64))
+            } else {
+                "—".to_string()
+            }));
+            cells.push(Cell::from(state_tag(t.state).cell()));
+            Row::new(cells)
         })
         .collect();
 
     let title = if app.transfers.is_empty() {
-        "transfers — press p (upload) or g (download)".to_string()
+        "transfers — press p to upload or g to download".to_string()
     } else {
         let running = app
             .transfers
@@ -99,44 +103,50 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
         format!("transfers — {} total, {} running", app.transfers.len(), running)
     };
 
+    let mut widths = vec![Constraint::Length(4), Constraint::Length(5)];
+    if wide {
+        widths.push(Constraint::Percentage(34));
+    }
+    widths.push(Constraint::Length(15));
+    widths.push(Constraint::Length(10));
+    widths.push(Constraint::Length(12));
+    widths.push(Constraint::Min(10));
+
     let mut state = TableState::default();
     if !rows.is_empty() {
         state.select(Some(app.transfer_selected.min(rows.len() - 1)));
     }
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(5),
-            Constraint::Length(5),
-            Constraint::Percentage(24),
-            Constraint::Percentage(24),
-            Constraint::Length(18),
-            Constraint::Length(10),
-            Constraint::Length(12),
-            Constraint::Min(10),
-        ],
-    )
-    .header(header)
-    .block(components::panel_block(&title))
-    .row_highlight_style(
-        Style::default()
-            .bg(th::SELECTED_BG)
-            .add_modifier(Modifier::BOLD),
-    )
-    .highlight_symbol("▶ ")
-    .column_spacing(1);
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(components::panel_block(&title))
+        .row_highlight_style(
+            Style::default()
+                .bg(th::SELECTED_BG)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ")
+        .column_spacing(1);
 
     f.render_stateful_widget(table, area, &mut state);
 }
 
-/// Aggregate gauge for the currently selected transfer, so a long upload is
-/// readable at a glance without scanning the table.
+fn state_tag(s: TransferState) -> Tag {
+    let tone = match s {
+        TransferState::Done => Tone::Ok,
+        TransferState::Failed => Tone::Error,
+        TransferState::Cancelled => Tone::Neutral,
+        TransferState::Running => Tone::Accent,
+        TransferState::Queued => Tone::Warn,
+    };
+    Tag::new(s.label(), tone)
+}
+
 fn render_active_gauge(f: &mut Frame, app: &App, area: Rect) {
     let Some(t) = app.transfers.get(app.transfer_selected) else {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                " no active transfer ",
+                " no transfer selected",
                 Style::default().fg(th::MUTED),
             )))
             .block(components::panel_block("current")),
@@ -146,25 +156,26 @@ fn render_active_gauge(f: &mut Frame, app: &App, area: Rect) {
     };
 
     if t.state.is_terminal() {
-        let text = match (&t.error, t.state) {
-            (Some(err), _) => format!(" #{} {} — {err}", t.id, t.state.label()),
-            (None, s) => format!(
-                " #{} {} — {}",
-                t.id,
-                s.label(),
-                human_bytes(t.transferred as i64)
-            ),
-        };
+        let mut spans = vec![Span::raw(" "), state_tag(t.state).span(), Span::raw(" ")];
+        spans.push(Span::styled(
+            format!("#{} ", t.id),
+            Style::default().fg(th::MUTED),
+        ));
+        match &t.error {
+            Some(err) => spans.push(Span::styled(err.clone(), Style::default().fg(th::ERROR))),
+            None => spans.push(Span::styled(
+                format!("{} transferred", human_bytes(t.transferred as i64)),
+                Style::default().fg(th::TEXT),
+            )),
+        }
+        if t.state == TransferState::Cancelled {
+            spans.push(Span::styled(
+                "   (cancelled before completion)",
+                Style::default().fg(th::MUTED),
+            ));
+        }
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                text,
-                Style::default().fg(if t.state == TransferState::Failed {
-                    th::ERROR
-                } else {
-                    th::OK
-                }),
-            )))
-            .block(components::panel_block("current")),
+            Paragraph::new(Line::from(spans)).block(components::panel_block("current")),
             area,
         );
         return;
@@ -194,30 +205,56 @@ fn render_active_gauge(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(g, area);
 }
 
+fn render_counters(f: &mut Frame, app: &App, area: Rect) {
+    let count = |s: TransferState| app.transfers.iter().filter(|t| t.state == s).count();
+    let bytes_up: u64 = app
+        .transfers
+        .iter()
+        .filter(|t| t.kind == TransferKind::Upload)
+        .map(|t| t.transferred)
+        .sum();
+    let bytes_down: u64 = app
+        .transfers
+        .iter()
+        .filter(|t| t.kind == TransferKind::Download)
+        .map(|t| t.transferred)
+        .sum();
+
+    let spans = vec![
+        Span::raw(" "),
+        Tag::solid(format!("{} running", count(TransferState::Running)), Tone::Accent).span(),
+        Span::raw(" "),
+        Tag::new(format!("{} queued", count(TransferState::Queued)), Tone::Warn).span(),
+        Span::raw(" "),
+        Tag::new(format!("{} done", count(TransferState::Done)), Tone::Ok).span(),
+        Span::raw(" "),
+        Tag::new(format!("{} failed", count(TransferState::Failed)), Tone::Error).span(),
+        Span::raw("   "),
+        Span::styled("↑ ", Style::default().fg(th::WARN)),
+        Span::styled(
+            human_bytes(bytes_up as i64),
+            Style::default().fg(th::TEXT),
+        ),
+        Span::styled("   ↓ ", Style::default().fg(th::INFO)),
+        Span::styled(
+            human_bytes(bytes_down as i64),
+            Style::default().fg(th::TEXT),
+        ),
+    ];
+
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).block(components::panel_block("queue")),
+        area,
+    );
+}
+
 fn render_form(f: &mut Frame, form: &TransferForm, area: Rect) {
-    let rect = components::centered_rect(64, 40, area);
+    let rect = components::centered_rect(66, 44, area);
     f.render_widget(Clear, rect);
 
-    let title = match form.kind {
-        TransferKind::Upload => "upload  local -> curvine",
-        TransferKind::Download => "download  curvine -> local",
-    };
-
-    let field = |label: &str, value: &str, focused: bool| {
-        let cursor = if focused { "▏" } else { "" };
-        let style = if focused {
-            Style::default().fg(th::TEXT)
-        } else {
-            Style::default().fg(th::MUTED)
-        };
-        Line::from(vec![
-            Span::styled(
-                format!("  {label:<8}"),
-                Style::default().fg(th::ACCENT_DIM),
-            ),
-            Span::styled(value.to_string(), style),
-            Span::styled(cursor, Style::default().fg(th::ACCENT)),
-        ])
+    let (title, tone) = match form.kind {
+        TransferKind::Upload => ("upload  local → curvine", Tone::Warn),
+        TransferKind::Download => ("download  curvine → local", Tone::Info),
     };
 
     let local_label = match form.kind {
@@ -227,20 +264,33 @@ fn render_form(f: &mut Frame, form: &TransferForm, area: Rect) {
 
     let mut lines = vec![
         Line::from(""),
-        field(local_label, &form.local, form.focus == 0),
+        Line::from(vec![Span::raw("  "), Tag::solid(
+            match form.kind {
+                TransferKind::Upload => "PUT",
+                TransferKind::Download => "GET",
+            },
+            tone,
+        ).span()]),
         Line::from(""),
-        field("remote", &form.remote, form.focus == 1),
+        section("paths"),
+        input_line(local_label, &form.local, form.focus == 0, false),
+        input_line("remote", &form.remote, form.focus == 1, false),
         Line::from(""),
     ];
 
     if let Some(err) = &form.error {
-        lines.push(Line::from(Span::styled(
-            format!("  {err}"),
-            Style::default().fg(th::ERROR),
-        )));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Tag::solid("error", Tone::Error).span(),
+            Span::styled(format!(" {err}"), Style::default().fg(th::ERROR)),
+        ]));
     } else {
+        let hint = match form.kind {
+            TransferKind::Upload => "streams from the local file in write_chunk_size slices",
+            TransferKind::Download => "streams to the local file in read_chunk_size slices",
+        };
         lines.push(Line::from(Span::styled(
-            "  tab switch field   enter transfer   esc cancel",
+            format!("  {hint}"),
             Style::default().fg(th::MUTED),
         )));
     }

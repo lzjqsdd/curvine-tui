@@ -167,3 +167,54 @@ fn bench_produces_metrics() {
     assert!(stdout.contains("ReadBig"), "read metric missing:\n{stdout}");
     assert!(stdout.contains("ops/s"), "ops unit missing:\n{stdout}");
 }
+
+#[test]
+fn mount_and_umount_round_trip() {
+    skip_unless_live!();
+
+    // Mount a throwaway local UFS directory, confirm it appears, then unmount.
+    let dir = tmp_dir().join("ufs-mount");
+    std::fs::create_dir_all(&dir).expect("ufs dir");
+    std::fs::write(dir.join("hello.txt"), b"hello\n").expect("write file");
+
+    let ufs = format!("file://{}", dir.display());
+    // Curvine path must mirror the UFS path unless consistency checks are off.
+    let cv = dir.display().to_string();
+
+    let mount = Command::new(bin())
+        .arg("--probe")
+        .env("CURVINE_TUI_PROBE_MOUNT", format!("{ufs}|{cv}"))
+        .output()
+        .expect("mount");
+    let out = String::from_utf8_lossy(&mount.stdout);
+    assert!(out.contains("mount    : OK"), "mount failed:\n{out}");
+
+    let umount = Command::new(bin())
+        .arg("--probe")
+        .env("CURVINE_TUI_PROBE_UMOUNT", &cv)
+        .output()
+        .expect("umount");
+    let out = String::from_utf8_lossy(&umount.stdout);
+    assert!(out.contains("umount   : OK"), "umount failed:\n{out}");
+}
+
+#[test]
+fn umount_of_absent_mount_fails_cleanly() {
+    skip_unless_live!();
+
+    let out = Command::new(bin())
+        .arg("--probe")
+        .env("CURVINE_TUI_PROBE_UMOUNT", "/definitely/not/mounted")
+        .output()
+        .expect("probe");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("umount   : FAILED"),
+        "expected a clean failure:\n{stdout}"
+    );
+    assert!(
+        !out.status.success(),
+        "a failed umount must exit non-zero"
+    );
+}

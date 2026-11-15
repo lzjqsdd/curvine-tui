@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use curvine_fs_api::{FileSystem, Path};
 use curvine_job_client::JobMasterClient;
-use curvine_model::{FileStatus, FilesystemInfo, JobStatus, MountInfo, RuntimeConfigEntry};
+use curvine_model::{
+    FileStatus, FilesystemInfo, JobStatus, MountInfo, MountOptions, RuntimeConfigEntry,
+};
 use curvine_runtime::runtime::Runtime;
 use curvine_unified_fs::UnifiedFileSystem;
 
@@ -140,6 +142,20 @@ impl ClusterClient {
 
     pub async fn mounts(&self) -> Result<Vec<MountInfo>> {
         self.fs.get_mount_table().await.map_err(AppError::from_fs)
+    }
+
+    pub async fn mount(&self, ufs: &str, cv: &str, opts: MountOptions) -> Result<()> {
+        let ufs = p(ufs)?;
+        let cv = p(cv)?;
+        self.fs
+            .mount(&ufs, &cv, opts)
+            .await
+            .map_err(AppError::from_fs)
+    }
+
+    pub async fn umount(&self, cv: &str) -> Result<()> {
+        let cv = p(cv)?;
+        self.fs.umount(&cv).await.map_err(AppError::from_fs)
     }
 
     pub async fn runtime_config(&self, key: Option<&str>) -> Result<Vec<RuntimeConfigEntry>> {

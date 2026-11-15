@@ -14,6 +14,7 @@ pub mod components;
 pub mod dashboard;
 pub mod files;
 pub mod jobs;
+pub mod mounts;
 pub mod bench;
 pub mod fsck;
 pub mod nodes;
@@ -39,7 +40,7 @@ pub fn render(f: &mut Frame, app: &App) {
         Panel::Dashboard => dashboard::render(f, app, chunks[1]),
         Panel::Files => files::render(f, app, chunks[1]),
         Panel::Nodes => nodes::render(f, app, chunks[1]),
-        Panel::Mounts => jobs::render_mounts(f, app, chunks[1]),
+        Panel::Mounts => mounts::render(f, app, chunks[1]),
         Panel::Jobs => jobs::render(f, app, chunks[1]),
         Panel::Transfers => transfers::render(f, app, chunks[1]),
         Panel::Fsck => fsck::render(f, app, chunks[1]),
@@ -152,15 +153,40 @@ fn render_hints(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
     if app.mode == InputMode::Filter {
+        let buf = if app.panel == Panel::Config {
+            &app.config_filter
+        } else {
+            &app.files.filter
+        };
         let line = Line::from(vec![
             Span::styled(" /", Style::default().fg(th::ACCENT)),
-            Span::raw(app.files.filter.clone()),
+            Span::raw(buf.clone()),
             Span::styled("▏", Style::default().fg(th::ACCENT)),
         ]);
         f.render_widget(Paragraph::new(line), area);
         return;
     }
 
+    if app.mode == InputMode::Mount {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "tab next field   ←→ change   space toggle   enter mount   esc cancel",
+                Style::default().fg(th::MUTED),
+            ))),
+            area,
+        );
+        return;
+    }
+    if app.mode == InputMode::Confirm {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "enter confirm   esc cancel",
+                Style::default().fg(th::WARN),
+            ))),
+            area,
+        );
+        return;
+    }
     if app.mode == InputMode::Transfer {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -175,7 +201,9 @@ fn render_hints(f: &mut Frame, app: &App, area: Rect) {
     let hints = match app.panel {
         Panel::Files => "↑↓ move ⏎ enter ⌫ up / filter m mkdir p put g get d rm ? help q quit",
         Panel::Transfers => "↑↓ select x cancel c clear p put g get r refresh ? help q quit",
+        Panel::Mounts => "↑↓ select  n new mount  u unmount  r refresh  ? help  q quit",
         Panel::Fsck => "enter scan  x cancel  f target=cwd  r rescan  ? help  q quit",
+        Panel::Config => "/ filter keys  r reload  ? help  q quit",
         Panel::Bench => "enter run  p profile  t threads  d duration  r rerun  ? help  q quit",
         _ => "tab panels 1-9 jump p put g get r refresh : cmd ? help q quit",
     };

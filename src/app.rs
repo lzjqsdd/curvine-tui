@@ -83,6 +83,10 @@ pub enum InputMode {
     Filter,
     /// Guided put/get form.
     Transfer,
+    /// Mount form popup.
+    Mount,
+    /// Unmount confirmation popup.
+    Confirm,
 }
 
 /// Per-panel load state, so we can render spinners and errors uniformly.
@@ -206,6 +210,124 @@ impl TransferEntry {
     }
 }
 
+/// Cyclable write mode for the mount form, mirroring `WriteType`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MountWriteMode {
+    CacheMode,
+    FsMode,
+}
+
+impl MountWriteMode {
+    #[allow(dead_code)]
+    pub const ALL: [MountWriteMode; 2] = [MountWriteMode::CacheMode, MountWriteMode::FsMode];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MountWriteMode::CacheMode => "cache",
+            MountWriteMode::FsMode => "fs",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            MountWriteMode::CacheMode => MountWriteMode::FsMode,
+            MountWriteMode::FsMode => MountWriteMode::CacheMode,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MountStorage {
+    Disk,
+    Ssd,
+    Hdd,
+    Mem,
+    Ufs,
+}
+
+impl MountStorage {
+    #[allow(dead_code)]
+    pub const ALL: [MountStorage; 5] = [
+        MountStorage::Disk,
+        MountStorage::Ssd,
+        MountStorage::Hdd,
+        MountStorage::Mem,
+        MountStorage::Ufs,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MountStorage::Disk => "disk",
+            MountStorage::Ssd => "ssd",
+            MountStorage::Hdd => "hdd",
+            MountStorage::Mem => "mem",
+            MountStorage::Ufs => "ufs",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|v| *v == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+
+    pub fn prev(self) -> Self {
+        let i = Self::ALL.iter().position(|v| *v == self).unwrap_or(0);
+        Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+
+    pub fn to_model(self) -> curvine_model::StorageType {
+        match self {
+            MountStorage::Disk => curvine_model::StorageType::Disk,
+            MountStorage::Ssd => curvine_model::StorageType::Ssd,
+            MountStorage::Hdd => curvine_model::StorageType::Hdd,
+            MountStorage::Mem => curvine_model::StorageType::Mem,
+            MountStorage::Ufs => curvine_model::StorageType::Ufs,
+        }
+    }
+}
+
+/// Fields of the mount form, in tab order.
+pub const MOUNT_FIELDS: usize = 7;
+
+/// Multi-field mount form. Values are kept as strings and only parsed on submit
+/// so a partially typed duration never blocks editing.
+pub struct MountForm {
+    pub ufs_path: String,
+    pub cv_path: String,
+    pub write_type: MountWriteMode,
+    pub storage_type: MountStorage,
+    pub ttl: String,
+    pub auto_cache: bool,
+    pub read_verify_ufs: bool,
+    pub focus: usize,
+    pub error: Option<String>,
+}
+
+impl MountForm {
+    pub fn new(cwd: &str) -> Self {
+        Self {
+            ufs_path: String::new(),
+            cv_path: cwd.to_string(),
+            write_type: MountWriteMode::CacheMode,
+            storage_type: MountStorage::Disk,
+            ttl: "0".to_string(),
+            auto_cache: false,
+            read_verify_ufs: false,
+            focus: 0,
+            error: None,
+        }
+    }
+
+    fn field_mut(&mut self) -> Option<&mut String> {
+        match self.focus {
+            0 => Some(&mut self.ufs_path),
+            1 => Some(&mut self.cv_path),
+            4 => Some(&mut self.ttl),
+            _ => None,
+        }
+    }
+}
+
 /// Two-field put/get form. `focus` selects which field receives keystrokes.
 pub struct TransferForm {
     pub kind: TransferKind,
@@ -271,6 +393,7 @@ pub struct App {
     pub mounts: Loadable<Vec<MountRow>>,
     pub jobs: Loadable<Vec<JobRow>>,
     pub config: Loadable<Vec<ConfigRow>>,
+    pub config_filter: String,
 
     pub fsck: Loadable<FsckSnapshot>,
     pub fsck_path: String,
@@ -282,6 +405,9 @@ pub struct App {
     pub transfers: Vec<TransferEntry>,
     pub transfer_selected: usize,
     pub form: Option<TransferForm>,
+    pub mount_selected: usize,
+    pub mount_form: Option<MountForm>,
+    pub umount_confirm: Option<String>,
     pub(crate) next_transfer_id: u64,
 
     pub log: Vec<String>,
@@ -309,6 +435,7 @@ impl App {
             mounts: Loadable::default(),
             jobs: Loadable::default(),
             config: Loadable::default(),
+            config_filter: String::new(),
             fsck: Loadable::default(),
             fsck_path: "/".to_string(),
             fsck_cancel: new_cancel_flag(),
@@ -318,6 +445,9 @@ impl App {
             transfers: Vec::new(),
             transfer_selected: 0,
             form: None,
+            mount_selected: 0,
+            mount_form: None,
+            umount_confirm: None,
             next_transfer_id: 1,
             log: Vec::new(),
             help_visible: false,
@@ -788,6 +918,8 @@ impl App {
             InputMode::Command => return self.on_command_key(key),
             InputMode::Filter => return self.on_filter_key(key),
             InputMode::Transfer => return self.on_form_key(key),
+            InputMode::Mount => return self.on_mount_key(key),
+            InputMode::Confirm => return self.on_confirm_key(key),
             InputMode::Normal => {}
         }
 
@@ -825,6 +957,183 @@ impl App {
             KeyCode::Char('p') => self.open_form(TransferKind::Upload),
             KeyCode::Char('g') => self.open_form(TransferKind::Download),
             _ => self.on_panel_key(key),
+        }
+    }
+
+    fn on_mounts_key(&mut self, key: KeyEvent) {
+        let n = self.mounts.data.as_ref().map(|l| l.len()).unwrap_or(0);
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                if n > 0 {
+                    self.mount_selected = (self.mount_selected + 1).min(n - 1);
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.mount_selected = self.mount_selected.saturating_sub(1);
+            }
+            KeyCode::Char('n') => {
+                let cwd = self.files.cwd.clone();
+                self.mount_form = Some(MountForm::new(&cwd));
+                self.mode = InputMode::Mount;
+            }
+            KeyCode::Char('u') | KeyCode::Delete => {
+                if let Some(m) = self.mounts.data.as_ref().and_then(|l| l.get(self.mount_selected))
+                {
+                    self.umount_confirm = Some(m.cv_path.clone());
+                    self.mode = InputMode::Confirm;
+                } else {
+                    self.set_status("no mount selected", true);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn on_mount_key(&mut self, key: KeyEvent) {
+        let Some(form) = self.mount_form.as_mut() else {
+            self.mode = InputMode::Normal;
+            return;
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.mount_form = None;
+                self.mode = InputMode::Normal;
+                self.set_status("mount cancelled", false);
+            }
+            KeyCode::Tab => form.focus = (form.focus + 1) % MOUNT_FIELDS,
+            KeyCode::BackTab => form.focus = (form.focus + MOUNT_FIELDS - 1) % MOUNT_FIELDS,
+            KeyCode::Backspace => {
+                if let Some(f) = form.field_mut() {
+                    f.pop();
+                }
+            }
+            KeyCode::Left => match form.focus {
+                2 => form.write_type = form.write_type.next(),
+                3 => form.storage_type = form.storage_type.prev(),
+                _ => {}
+            },
+            KeyCode::Right => match form.focus {
+                2 => form.write_type = form.write_type.next(),
+                3 => form.storage_type = form.storage_type.next(),
+                _ => {}
+            },
+            KeyCode::Char(' ') => match form.focus {
+                2 => form.write_type = form.write_type.next(),
+                3 => form.storage_type = form.storage_type.next(),
+                5 => form.auto_cache = !form.auto_cache,
+                6 => form.read_verify_ufs = !form.read_verify_ufs,
+                _ => {
+                    if let Some(f) = form.field_mut() {
+                        f.push(' ');
+                    }
+                }
+            },
+            KeyCode::Char(c) => {
+                if let Some(f) = form.field_mut() {
+                    f.push(c);
+                }
+            }
+            KeyCode::Enter => self.submit_mount(),
+            _ => {}
+        }
+    }
+
+    fn submit_mount(&mut self) {
+        let Some(form) = self.mount_form.as_ref() else {
+            return;
+        };
+
+        let ufs = form.ufs_path.trim().to_string();
+        let cv = normalize_path(form.cv_path.trim(), "/");
+        if ufs.is_empty() {
+            if let Some(f) = self.mount_form.as_mut() {
+                f.error = Some("ufs path is required (e.g. s3://bucket/prefix or file:///path)".into());
+            }
+            return;
+        }
+        if !ufs.contains("://") {
+            if let Some(f) = self.mount_form.as_mut() {
+                f.error = Some("ufs path needs a scheme, e.g. s3://, file://, oss://".into());
+            }
+            return;
+        }
+        let ttl_ms = match form.ttl.trim().parse::<i64>() {
+            Ok(v) if v >= 0 => v * 1000,
+            _ => {
+                if let Some(f) = self.mount_form.as_mut() {
+                    f.error = Some("ttl must be a non-negative number of seconds".into());
+                }
+                return;
+            }
+        };
+
+        let opts = curvine_model::MountOptions::builder()
+            .write_type(match form.write_type {
+                MountWriteMode::CacheMode => curvine_model::WriteType::CacheMode,
+                MountWriteMode::FsMode => curvine_model::WriteType::FsMode,
+            })
+            .storage_type(form.storage_type.to_model())
+            .ttl_ms(ttl_ms)
+            .ttl_action(match form.write_type {
+                MountWriteMode::CacheMode => curvine_model::TtlAction::Delete,
+                MountWriteMode::FsMode => curvine_model::TtlAction::Free,
+            })
+            .read_verify_ufs(form.read_verify_ufs)
+            .auto_cache(form.auto_cache)
+            .build();
+
+        self.mount_form = None;
+        self.mode = InputMode::Normal;
+
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        let label = "mount".to_string();
+        let msg = format!("mounted {ufs} -> {cv}");
+        self.spawn_call(async move {
+            let res = client
+                .mount(&ufs, &cv, opts)
+                .await
+                .map(|_| msg)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::TaskDone(TaskResult::OpDone {
+                label,
+                result: res,
+            }));
+        });
+    }
+
+    fn on_confirm_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('n') => {
+                self.umount_confirm = None;
+                self.mode = InputMode::Normal;
+                self.set_status("unmount cancelled", false);
+            }
+            KeyCode::Enter | KeyCode::Char('y') => {
+                let Some(path) = self.umount_confirm.take() else {
+                    self.mode = InputMode::Normal;
+                    return;
+                };
+                self.mode = InputMode::Normal;
+
+                let client = self.client.clone();
+                let tx = self.tx.clone();
+                let label = "umount".to_string();
+                let msg = format!("unmounted {path}");
+                self.spawn_call(async move {
+                    let res = client
+                        .umount(&path)
+                        .await
+                        .map(|_| msg)
+                        .map_err(|e| e.to_string());
+                    let _ = tx.send(AppEvent::TaskDone(TaskResult::OpDone {
+                        label,
+                        result: res,
+                    }));
+                });
+            }
+            _ => {}
         }
     }
 
@@ -870,9 +1179,22 @@ impl App {
         }
     }
 
+    fn on_config_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('/') {
+            self.mode = InputMode::Filter;
+            self.config_filter.clear();
+        }
+    }
+
     fn on_panel_key(&mut self, key: KeyEvent) {
         if self.panel == Panel::Transfers {
             return self.on_transfers_key(key);
+        }
+        if self.panel == Panel::Config {
+            return self.on_config_key(key);
+        }
+        if self.panel == Panel::Mounts {
+            return self.on_mounts_key(key);
         }
         if self.panel == Panel::Fsck {
             return self.on_fsck_key(key);
@@ -1160,20 +1482,33 @@ impl App {
     }
 
     fn on_filter_key(&mut self, key: KeyEvent) {
+        let on_config = self.panel == Panel::Config;
+        let buf = if on_config {
+            &mut self.config_filter
+        } else {
+            &mut self.files.filter
+        };
+
         match key.code {
             KeyCode::Esc => {
                 self.mode = InputMode::Normal;
-                self.files.filter.clear();
-                self.files.selected = 0;
+                buf.clear();
+                if !on_config {
+                    self.files.selected = 0;
+                }
             }
             KeyCode::Enter => self.mode = InputMode::Normal,
             KeyCode::Backspace => {
-                self.files.filter.pop();
-                self.files.selected = 0;
+                buf.pop();
+                if !on_config {
+                    self.files.selected = 0;
+                }
             }
             KeyCode::Char(c) => {
-                self.files.filter.push(c);
-                self.files.selected = 0;
+                buf.push(c);
+                if !on_config {
+                    self.files.selected = 0;
+                }
             }
             _ => {}
         }
@@ -1320,6 +1655,60 @@ impl App {
                 self.panel = Panel::Transfers;
                 self.cancel_selected_transfer();
             }
+            "mount" => {
+                if parts.len() >= 3 {
+                    let ufs = parts[1].to_string();
+                    let cv = normalize_path(parts[2], &self.files.cwd);
+                    let opts = curvine_model::MountOptions::builder()
+                        .write_type(curvine_model::WriteType::CacheMode)
+                        .ttl_action(curvine_model::TtlAction::Delete)
+                        .build();
+                    let client = self.client.clone();
+                    let tx = self.tx.clone();
+                    let label = "mount".to_string();
+                    let msg = format!("mounted {ufs} -> {cv}");
+                    self.panel = Panel::Mounts;
+                    self.spawn_call(async move {
+                        let res = client
+                            .mount(&ufs, &cv, opts)
+                            .await
+                            .map(|_| msg)
+                            .map_err(|e| e.to_string());
+                        let _ = tx.send(AppEvent::TaskDone(TaskResult::OpDone {
+                            label,
+                            result: res,
+                        }));
+                    });
+                } else {
+                    // No arguments: open the form instead of erroring.
+                    let cwd = self.files.cwd.clone();
+                    self.mount_form = Some(MountForm::new(&cwd));
+                    self.mode = InputMode::Mount;
+                    self.panel = Panel::Mounts;
+                }
+            }
+            "umount" | "unmount" => match parts.get(1) {
+                Some(p) => {
+                    let cv = normalize_path(p, &self.files.cwd);
+                    let client = self.client.clone();
+                    let tx = self.tx.clone();
+                    let label = "umount".to_string();
+                    let msg = format!("unmounted {cv}");
+                    self.panel = Panel::Mounts;
+                    self.spawn_call(async move {
+                        let res = client
+                            .umount(&cv)
+                            .await
+                            .map(|_| msg)
+                            .map_err(|e| e.to_string());
+                        let _ = tx.send(AppEvent::TaskDone(TaskResult::OpDone {
+                            label,
+                            result: res,
+                        }));
+                    });
+                }
+                None => self.set_status("usage: umount <cv-path>", true),
+            },
             "fsck" => {
                 if let Some(p) = parts.get(1) {
                     self.fsck_path = normalize_path(p, &self.files.cwd);

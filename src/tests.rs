@@ -39,6 +39,7 @@ fn test_app() -> App {
         mounts: Loadable::default(),
         jobs: Loadable::default(),
         config: Loadable::default(),
+        config_filter: String::new(),
         fsck: Loadable::default(),
         fsck_path: "/".to_string(),
         fsck_cancel: new_cancel_flag(),
@@ -48,6 +49,9 @@ fn test_app() -> App {
         transfers: Vec::new(),
         transfer_selected: 0,
         form: None,
+        mount_selected: 0,
+        mount_form: None,
+        umount_confirm: None,
         next_transfer_id: 1,
         log: vec!["test".to_string()],
         help_visible: false,
@@ -127,7 +131,17 @@ fn populate_sample_data(app: &mut App) {
         }],
     });
 
-    app.mounts.ok(vec![MountRow {
+    app.mounts.ok(vec![
+        MountRow {
+            cv_path: "/logs".into(),
+            ufs_path: "file:///tmp/logs".into(),
+            mount_id: 2,
+            ttl_ms: 0,
+            storage_type: "Hdd".into(),
+            write_type: "FsMode".into(),
+            provider: String::new(),
+        },
+        MountRow {
         cv_path: "/data".into(),
         ufs_path: "s3://bucket/data".into(),
         mount_id: 1,
@@ -135,7 +149,8 @@ fn populate_sample_data(app: &mut App) {
         storage_type: "S3".into(),
         write_type: "Cache".into(),
         provider: "Aws".into(),
-    }]);
+        },
+    ]);
 
     app.jobs.ok(vec![JobRow {
         job_id: "job-0123456789abcdef".into(),
@@ -463,6 +478,59 @@ fn cancelling_a_running_transfer_sets_terminal_state() {
 
     assert!(flag.load(std::sync::atomic::Ordering::Relaxed));
     assert_eq!(app.transfers[0].state, TransferState::Cancelled);
+}
+
+#[test]
+fn mount_form_renders_all_fields() {
+    let mut app = test_app();
+    app.panel = Panel::Mounts;
+    app.mode = crate::app::InputMode::Mount;
+    app.mount_form = Some(crate::app::MountForm::new("/data"));
+
+    let backend = TestBackend::new(110, 34);
+    let mut term = Terminal::new(backend).unwrap();
+    term.draw(|f| crate::ui::render(f, &app)).unwrap();
+    let text = buffer_text(&term);
+
+    assert!(text.contains("new mount"), "form title missing:\n{text}");
+    for field in ["ufs", "curvine", "write mode", "storage", "ttl", "auto cache", "read verify"] {
+        assert!(text.contains(field), "field {field:?} missing:\n{text}");
+    }
+    assert!(text.contains("cache"), "write mode value missing");
+    assert!(text.contains("/data"), "cv path default missing");
+}
+
+#[test]
+fn umount_confirm_renders_target_path() {
+    let mut app = test_app();
+    app.panel = Panel::Mounts;
+    app.mode = crate::app::InputMode::Confirm;
+    app.umount_confirm = Some("/data".to_string());
+
+    let backend = TestBackend::new(100, 30);
+    let mut term = Terminal::new(backend).unwrap();
+    term.draw(|f| crate::ui::render(f, &app)).unwrap();
+    let text = buffer_text(&term);
+
+    assert!(text.contains("unmount"), "confirm title missing:\n{text}");
+    assert!(text.contains("/data"), "target path missing");
+    assert!(text.contains("confirm"), "confirm hint missing");
+}
+
+#[test]
+fn rich_controls_survive_narrow_layouts() {
+    // Bars, badges and KV rows must all remain renderable when every panel
+    // drops to its compact column set.
+    for panel in Panel::ALL {
+        for width in [60u16, 76, 96] {
+            let out = render_panel(panel, width, 22, true);
+            assert!(
+                out.contains(panel.title()),
+                "panel {:?} unidentifiable at width {width}",
+                panel
+            );
+        }
+    }
 }
 
 #[test]
