@@ -48,7 +48,12 @@ fn probe_reports_a_healthy_cluster() {
         "unexpected probe output:\n{stdout}"
     );
     assert!(stdout.contains("cluster  : OK"), "cluster:\n{stdout}");
-    assert!(stdout.contains("ls /     : OK"), "listing:\n{stdout}");
+    // The listing line carries the path, so match the pair rather than the
+    // column padding.
+    assert!(
+        stdout.lines().any(|l| l.starts_with("ls /") && l.contains(": OK")),
+        "listing:\n{stdout}"
+    );
 }
 
 #[test]
