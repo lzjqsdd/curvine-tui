@@ -53,11 +53,10 @@ pub fn render(f: &mut Frame, app: &App) {
     render_hints(f, app, chunks[3]);
 
     // Blocking dialogs sit above panel content and below help.
-    let progress = app.anim.dialog_progress();
     if let Some(pending) = &app.confirm {
-        components::render_dialog(f, f.area(), &confirm_to_dialog(pending), progress);
+        components::render_dialog(f, f.area(), &confirm_to_dialog(pending));
     } else if let Some(view) = &app.describe {
-        components::render_dialog(f, f.area(), &mounts::describe_to_dialog(view), progress);
+        components::render_dialog(f, f.area(), &mounts::describe_to_dialog(view));
     }
 
     if app.help_visible {

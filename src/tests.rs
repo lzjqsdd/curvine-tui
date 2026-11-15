@@ -1146,7 +1146,10 @@ fn debug_which_spring_is_stuck() {
 }
 
 #[test]
-fn dialog_grows_while_entering() {
+fn dialogs_are_complete_on_the_first_frame() {
+    // Regression: an animated pop-in showed a clipped box on the first draw and
+    // only reached full size 150 ms later, which read as lag. A modal must be
+    // fully legible the instant it appears, with zero frames elapsed.
     let mut app = test_app();
     app.panel = Panel::Files;
     populate_sample_data(&mut app);
@@ -1157,23 +1160,45 @@ fn dialog_grows_while_entering() {
         crossterm::event::KeyModifiers::NONE,
     )));
 
-    // No frames yet: the box is at its smallest but must already be legible.
-    let opening = render_app(&app, 110, 26);
-    assert!(opening.contains("delete"), "title must show immediately");
+    let first = render_app(&app, 110, 26);
+    assert!(first.contains("delete"), "title missing:
+{first}");
+    assert!(first.contains("events.parquet"), "target missing on first frame");
+    assert!(first.contains("replicas"), "detail rows missing on first frame");
+    assert!(first.contains("confirm"), "footer missing on first frame");
+}
 
-    // Part way through the pop-in the box must still render its target.
-    app.on_event(crate::event::AppEvent::Frame(std::time::Duration::from_millis(60)));
-    let mid = render_app(&app, 110, 26);
-    assert!(mid.contains("events.parquet"), "target missing mid-transition");
+#[test]
+fn describe_dialog_is_complete_on_the_first_frame() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 1;
 
-    // And it must reach full size.
-    settle(&mut app);
-    let done = render_app(&app, 110, 26);
-    assert!(done.contains("confirm"), "footer missing when settled");
-    assert!(
-        done.lines().count() >= opening.lines().count(),
-        "dialog never grew"
-    );
+    app.on_event(crate::event::AppEvent::Key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('d'),
+        crossterm::event::KeyModifiers::NONE,
+    )));
+
+    let first = render_app(&app, 116, 30);
+    assert!(first.contains("describe"), "title missing:
+{first}");
+    assert!(first.contains("mode"), "detail rows missing");
+    assert!(first.contains("close"), "footer missing");
+}
+
+#[test]
+fn forms_are_complete_on_the_first_frame() {
+    let mut app = test_app();
+    app.panel = Panel::Mounts;
+    app.mode = crate::app::InputMode::Mount;
+    app.mount_form = Some(crate::app::MountForm::new("/data"));
+
+    let out = render_app(&app, 110, 34);
+    for field in ["ufs", "curvine", "write mode", "storage", "ttl"] {
+        assert!(out.contains(field), "field {field:?} missing on first frame:
+{out}");
+    }
 }
 
 #[test]
@@ -1197,3 +1222,4 @@ fn help_legend_lists_every_dot_tone() {
         assert!(out.contains(meaning), "legend missing {meaning}");
     }
 }
+

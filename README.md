@@ -135,8 +135,12 @@ Motion is used only where it explains a change, never for decoration:
 | capacity and health gauges | a 5 s refresh that snaps sideways is read as a glitch; a bar that travels is read as a change | critically-damped spring |
 | namespace counters | files/dirs/blocks count up so the eye can see *how much* changed | spring, integer tolerance |
 | transfer progress | progress arrives in bursts; easing makes it monotonic-looking | spring per transfer |
-| dialogs | a 150 ms pop-in signals "this is modal and new" | eased transition, 88%→100% scale |
 | status messages | a transient error stays readable even if you look away | wall-clock hold then colour fade |
+
+Dialogs deliberately do **not** animate. A modal sits on the critical path to a
+decision, and an early attempt at a 150 ms pop-in showed the box at 88% scale
+with its footer clipped on the first frame — it read as lag, not as polish.
+Dialogs now render complete in a single frame.
 
 Three rules the implementation follows:
 
@@ -149,6 +153,8 @@ Three rules the implementation follows:
 - **Animations must terminate.** Settle thresholds are per-spring (half a unit
   for integer counters, half a thousandth for ratios) with a 1.5 s watchdog, so a
   mis-tuned value cannot pin the UI at 60 fps.
+- **Nothing animates on the input path.** Selection, dialogs and forms appear
+  instantly; only values that change without the user acting are eased.
 
 The frame rate is governed, not constant: 16 ms while something is moving, 80 ms
 while a spinner or transfer is live, 250 ms when idle. The input thread already

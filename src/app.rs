@@ -883,14 +883,6 @@ impl App {
     fn on_frame(&mut self, dt: std::time::Duration) {
         self.retarget_animations();
 
-        // A dialog that is closing should stop its transition.
-        if self.confirm.is_none()
-            && self.describe.is_none()
-            && self.mount_form.is_none()
-            && self.form.is_none()
-        {
-            self.anim.close_dialog();
-        }
 
         self.anim.step(dt);
 
@@ -1231,7 +1223,6 @@ impl App {
                 .push((format!("storage {kind}"), crate::ui::human_bytes(*size)));
         }
 
-        self.anim.open_dialog(format!("describe:{}", view.subject));
         self.describe = Some(view);
         self.mode = InputMode::Describe;
     }
@@ -1249,7 +1240,6 @@ impl App {
             }
             KeyCode::Char('n') => {
                 let cwd = self.files.cwd.clone();
-                self.anim.open_dialog("form:mount");
                 self.mount_form = Some(MountForm::new(&cwd));
                 self.mode = InputMode::Mount;
             }
@@ -1258,7 +1248,6 @@ impl App {
                 {
                     let path = m.cv_path.clone();
                     let ufs = m.ufs_path.clone();
-                    self.anim.open_dialog(format!("confirm:umount:{path}"));
                     self.confirm = Some(PendingConfirm {
                         action: PendingAction::Umount { path: path.clone() },
                         title: "unmount".to_string(),
@@ -1599,7 +1588,6 @@ impl App {
             return;
         }
         let cwd = self.files.cwd.clone();
-        self.anim.open_dialog(format!("form:transfer:{kind:?}"));
         self.form = Some(match kind {
             TransferKind::Upload => TransferForm::upload(&cwd),
             TransferKind::Download => TransferForm::download(&cwd),
@@ -1779,7 +1767,6 @@ impl App {
             "this removes the file and all of its block replicas.".to_string()
         });
 
-        self.anim.open_dialog(format!("confirm:{path}"));
         self.confirm = Some(PendingConfirm {
             action: PendingAction::DeleteFile {
                 path: path.clone(),
@@ -1798,7 +1785,6 @@ impl App {
             return;
         };
         let path = join_path(&self.files.cwd, &entry.name);
-        self.anim.open_dialog(format!("confirm:free:{path}"));
         self.confirm = Some(PendingConfirm {
             action: PendingAction::FreeFile {
                 path: path.clone(),
@@ -1857,7 +1843,6 @@ impl App {
 
         if entry.is_dir {
             view.rows.push(("kind".into(), "directory".to_string()));
-            self.anim.open_dialog(format!("describe:{}", view.subject));
             self.describe = Some(view);
             self.mode = InputMode::Describe;
             return;
@@ -1867,7 +1852,6 @@ impl App {
         // never appears frozen while the block locations are fetched.
         view.rows.push(("blocks".into(), "loading…".to_string()));
         view.loading = true;
-        self.anim.open_dialog(format!("describe:{}", view.subject));
         self.describe = Some(view);
         self.mode = InputMode::Describe;
 
@@ -2138,7 +2122,6 @@ impl App {
                 } else {
                     // No arguments: open the form instead of erroring.
                     let cwd = self.files.cwd.clone();
-                    self.anim.open_dialog("form:mount");
                     self.mount_form = Some(MountForm::new(&cwd));
                     self.mode = InputMode::Mount;
                     self.panel = Panel::Mounts;

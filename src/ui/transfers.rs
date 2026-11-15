@@ -30,7 +30,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     render_counters(f, app, chunks[2]);
 
     if let Some(form) = &app.form {
-        render_form(f, form, area, app.anim.dialog_progress());
+        render_form(f, form, area);
     }
 }
 
@@ -274,8 +274,8 @@ fn render_counters(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn render_form(f: &mut Frame, form: &TransferForm, area: Rect, progress: f64) {
-    let rect = components::popup_rect(area, "", progress);
+fn render_form(f: &mut Frame, form: &TransferForm, area: Rect) {
+    let rect = components::centered_rect(66, 44, area);
     f.render_widget(Clear, rect);
 
     let (title, tone) = match form.kind {

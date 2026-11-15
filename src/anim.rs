@@ -22,11 +22,6 @@ pub const BUSY_FRAME: Duration = Duration::from_millis(80);
 /// Frame interval when the UI is completely idle.
 pub const IDLE_FRAME: Duration = Duration::from_millis(250);
 
-pub fn ease_out_cubic(t: f64) -> f64 {
-    let t = t.clamp(0.0, 1.0);
-    1.0 - (1.0 - t).powi(3)
-}
-
 /// A critically damped-ish spring that converges on its target.
 ///
 /// Stiffness/damping are tuned for ~250–320 ms settle: fast enough to feel like
@@ -173,54 +168,6 @@ impl Spring {
     }
 }
 
-/// A one-shot eased transition, used where a spring's velocity carry-over would
-/// be wrong — e.g. a dialog that should always enter the same way.
-///
-/// Elapsed time is accumulated from frame deltas rather than read from the wall
-/// clock, so the animation is deterministic: it advances exactly as fast as the
-/// UI is drawn, and a paused process resumes where it left off instead of
-/// jumping straight to the end.
-#[derive(Debug, Clone)]
-pub struct Transition {
-    from: f64,
-    to: f64,
-    duration: Duration,
-    elapsed: Duration,
-}
-
-impl Transition {
-    pub fn new(from: f64, to: f64, duration: Duration) -> Self {
-        Self {
-            from,
-            to,
-            duration,
-            elapsed: Duration::ZERO,
-        }
-    }
-
-    /// Advance by a frame delta.
-    pub fn advance(&mut self, dt: Duration) {
-        self.elapsed = (self.elapsed + dt).min(self.duration);
-    }
-
-    pub fn progress(&self) -> f64 {
-        if self.duration.is_zero() {
-            return 1.0;
-        }
-        (self.elapsed.as_secs_f64() / self.duration.as_secs_f64()).clamp(0.0, 1.0)
-    }
-
-    /// Eased 0..=1 value.
-    pub fn value(&self) -> f64 {
-        let t = ease_out_cubic(self.progress());
-        self.from + (self.to - self.from) * t
-    }
-
-    pub fn done(&self) -> bool {
-        self.progress() >= 1.0
-    }
-}
-
 /// Linear interpolation between two colours.
 ///
 /// Only `Rgb` pairs are blended; anything else falls back to the target so the
@@ -246,8 +193,6 @@ pub fn lerp_color(from: Color, to: Color, t: f64) -> Color {
 pub const STATUS_HOLD: Duration = Duration::from_millis(4000);
 /// Fade duration after the hold.
 pub const STATUS_FADE: Duration = Duration::from_millis(1200);
-/// Pop-in duration for blocking dialogs.
-pub const DIALOG_IN: Duration = Duration::from_millis(150);
 
 /// All animated values the UI owns.
 ///
@@ -268,11 +213,6 @@ pub struct AnimState {
     pub workers: Spring,
     /// Per-transfer progress, keyed by transfer id.
     pub transfers: HashMap<u64, Spring>,
-
-    /// Pop-in for whatever dialog is open.
-    pub dialog: Option<Transition>,
-    /// Which dialog the transition belongs to, so reopening restarts it.
-    dialog_key: Option<String>,
 
     /// When the current status message was set.
     status_at: Option<Instant>,
@@ -303,36 +243,7 @@ impl AnimState {
             blocks: c(0.0),
             workers: c(0.0),
             transfers: HashMap::new(),
-            dialog: None,
-            dialog_key: None,
             status_at: None,
-        }
-    }
-
-    /// Start (or keep) the pop-in for a dialog identified by `key`.
-    pub fn open_dialog(&mut self, key: impl Into<String>) {
-        let key = key.into();
-        if self.dialog_key.as_deref() == Some(key.as_str()) {
-            return; // already entering; do not restart on every frame
-        }
-        self.dialog_key = Some(key);
-        self.dialog = if self.reduced {
-            None
-        } else {
-            Some(Transition::new(0.0, 1.0, DIALOG_IN))
-        };
-    }
-
-    pub fn close_dialog(&mut self) {
-        self.dialog = None;
-        self.dialog_key = None;
-    }
-
-    /// 0..=1 pop-in progress; 1.0 when settled or reduced.
-    pub fn dialog_progress(&self) -> f64 {
-        match &self.dialog {
-            Some(t) => t.value(),
-            None => 1.0,
         }
     }
 
@@ -412,13 +323,6 @@ impl AnimState {
             moving |= s.step(dt);
         }
 
-        if let Some(t) = &mut self.dialog {
-            if !t.done() {
-                t.advance(dt);
-                moving = true;
-            }
-        }
-
         moving
     }
 
@@ -433,7 +337,6 @@ impl AnimState {
             || self.blocks.is_animating()
             || self.workers.is_animating()
             || self.transfers.values().any(|s| s.is_animating())
-            || self.dialog.as_ref().map(|t| !t.done()).unwrap_or(false)
     }
 }
 
@@ -514,42 +417,6 @@ mod tests {
         assert!(!anim.is_animating(), "reduced motion must not animate");
     }
 
-    #[test]
-    fn dialog_transition_completes_and_does_not_restart() {
-        let mut anim = AnimState::new(false);
-        anim.open_dialog("confirm:delete");
-        anim.step(Duration::from_millis(60));
-        let first = anim.dialog_progress();
-        assert!(
-            first > 0.0 && first < 1.0,
-            "expected mid-transition, got {first}"
-        );
-
-        // Reopening the same key must not reset progress mid-transition.
-        anim.open_dialog("confirm:delete");
-        assert!(anim.dialog_progress() >= first);
-
-        // Transitions are frame-driven, so stepping the full duration settles it
-        // without depending on wall-clock time.
-        anim.step(DIALOG_IN);
-        assert!((anim.dialog_progress() - 1.0).abs() < 0.001);
-
-        // A different key starts a fresh transition.
-        anim.open_dialog("describe:/x");
-        assert!(anim.dialog_progress() < 0.5);
-    }
-
-    #[test]
-    fn transition_is_frame_driven_not_wall_clock() {
-        // A process that stalls for a second must resume where it left off
-        // rather than snapping to the end.
-        let mut t = Transition::new(0.0, 1.0, Duration::from_millis(100));
-        assert!(t.progress() < 0.01, "should not have advanced on its own");
-        t.advance(Duration::from_millis(50));
-        assert!((t.progress() - 0.5).abs() < 0.001);
-        t.advance(Duration::from_millis(500));
-        assert!((t.progress() - 1.0).abs() < 0.001);
-    }
 
     #[test]
     fn status_fades_then_expires() {

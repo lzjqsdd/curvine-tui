@@ -24,7 +24,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     render_selected(f, app, rows[1]);
 
     if let Some(form) = &app.mount_form {
-        render_form(f, form, area, app.anim.dialog_progress());
+        render_form(f, form, area);
     }}
 
 fn render_table(f: &mut Frame, app: &App, area: Rect) {
@@ -170,8 +170,11 @@ fn render_selected(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn render_form(f: &mut Frame, form: &MountForm, area: Rect, progress: f64) {
-    let inner = popup_animated(f, area, "new mount", progress);
+fn render_form(f: &mut Frame, form: &MountForm, area: Rect) {
+    let rect = components::centered_rect(66, 56, area);
+    f.render_widget(ratatui::widgets::Clear, rect);
+    f.render_widget(components::panel_block("new mount"), rect);
+    let inner = components::panel_block("new mount").inner(rect);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(2)])
@@ -221,14 +224,6 @@ fn render_form(f: &mut Frame, form: &MountForm, area: Rect, progress: f64) {
         ])),
         rows[1],
     );
-}
-
-/// Popup frame that honours the dialog pop-in scale.
-fn popup_animated(f: &mut Frame, area: Rect, title: &str, progress: f64) -> Rect {
-    let rect = components::popup_rect(area, title, progress);
-    f.render_widget(ratatui::widgets::Clear, rect);
-    f.render_widget(components::panel_block(title), rect);
-    components::panel_block(title).inner(rect)
 }
 
 /// Convert a describe view into the generic dialog shape.
