@@ -1,0 +1,44 @@
+[package]
+name = "curvine-tui"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal UI for Curvine distributed file system"
+license = "Apache-2.0"
+
+[[bin]]
+name = "curvine-tui"
+path = "src/main.rs"
+
+[dependencies]
+# --- TUI ---
+ratatui = "0.29"
+crossterm = "0.28"
+
+# --- async / runtime ---
+tokio = { version = "1.42", features = ["full"] }
+futures = "0.3"
+crossbeam-channel = "0.5"
+
+# --- cli / config ---
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# --- curvine data layer ---
+curvine-config = { path = "../curvine/crates/common/curvine-config" }
+curvine-unified-fs = { path = "../curvine/crates/client/curvine-unified-fs" }
+curvine-job-client = { path = "../curvine/crates/client/curvine-job-client" }
+curvine-fs-api = { path = "../curvine/crates/common/curvine-fs-api" }
+curvine-model = { path = "../curvine/crates/common/curvine-model" }
+curvine-net = { path = "../curvine/crates/core/net" }
+curvine-runtime = { path = "../curvine/crates/core/runtime" }
+curvine-error = { path = "../curvine/crates/common/curvine-error" }
+
+# --- misc ---
+anyhow = "1.0"
+thiserror = "2.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["clock"] }
+bytes = "1.9"
+comfy-table = "7.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
