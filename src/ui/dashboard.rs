@@ -47,7 +47,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     // ---- detail panels
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
+        .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
         .split(rows[1]);
 
     render_summary(f, app, cols[0]);
@@ -61,13 +61,13 @@ fn render_summary(f: &mut Frame, app: &App, area: Rect) {
         Some(c) => {
             let kv = |k: &str, v: String| {
                 Line::from(vec![
-                    Span::styled(format!("  {k:<14}"), Style::default().fg(th::MUTED)),
+                    Span::styled(format!("  {k:<13}"), Style::default().fg(th::MUTED)),
                     Span::styled(v, Style::default().fg(th::TEXT)),
                 ])
             };
             lines.push(Line::from(""));
-            lines.push(kv("active master", c.active_master.clone()));
-            lines.push(kv("journal nodes", c.journal_nodes.len().to_string()));
+            lines.push(kv("master", c.active_master.clone()));
+            lines.push(kv("journal", format!("{} nodes", c.journal_nodes.len())));
             lines.push(kv("directories", c.inode_dir_num.to_string()));
             lines.push(kv("files", c.inode_file_num.to_string()));
             lines.push(kv("blocks", c.block_num.to_string()));
@@ -110,13 +110,15 @@ fn render_summary(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_workers(f: &mut Frame, app: &App, area: Rect) {
-    let header = Row::new(vec![
-        Cell::from("worker"),
-        Cell::from("status"),
-        Cell::from("used"),
-        Cell::from("avail"),
-        Cell::from("blocks"),
-    ])
+    // Drop the low-value columns on narrow terminals instead of letting fixed
+    // widths chop the worker address into unreadable fragments.
+    let wide = area.width >= 52;
+    let mut header_cells = vec![Cell::from("worker"), Cell::from("status"), Cell::from("used")];
+    if wide {
+        header_cells.push(Cell::from("avail"));
+        header_cells.push(Cell::from("blocks"));
+    }
+    let header = Row::new(header_cells)
     .style(
         Style::default()
             .fg(th::ACCENT_DIM)
@@ -132,29 +134,38 @@ fn render_workers(f: &mut Frame, app: &App, area: Rect) {
                 .iter()
                 .take(area.height.saturating_sub(3) as usize)
                 .map(|w| {
-                    Row::new(vec![
+                    let mut cells = vec![
                         Cell::from(w.address.clone()),
-                        Cell::from(w.status.clone())
-                            .style(Style::default().fg(th::OK)),
+                        Cell::from(w.status.clone()).style(Style::default().fg(th::OK)),
                         Cell::from(human_bytes(w.fs_used)),
-                        Cell::from(human_bytes(w.available)),
-                        Cell::from(w.block_num.to_string()),
-                    ])
+                    ];
+                    if wide {
+                        cells.push(Cell::from(human_bytes(w.available)));
+                        cells.push(Cell::from(w.block_num.to_string()));
+                    }
+                    Row::new(cells)
                 })
                 .collect()
         })
         .unwrap_or_default();
 
-    let table = Table::new(
-        rows,
-        [
+    let widths: Vec<Constraint> = if wide {
+        vec![
             Constraint::Percentage(34),
             Constraint::Percentage(18),
             Constraint::Percentage(17),
             Constraint::Percentage(17),
             Constraint::Percentage(14),
-        ],
-    )
+        ]
+    } else {
+        vec![
+            Constraint::Percentage(42),
+            Constraint::Percentage(28),
+            Constraint::Percentage(30),
+        ]
+    };
+
+    let table = Table::new(rows, widths)
     .header(header)
     .block(components::panel_block("live workers"))
     .column_spacing(1);

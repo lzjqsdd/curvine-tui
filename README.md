@@ -17,11 +17,19 @@ data layer wired directly into curvine's own crates (`curvine-unified-fs`,
 | Nodes | `node` | ✅ per-worker capacity, usage %, blocks |
 | Mounts | `mount`, `umount` | ✅ read-only table (mount/umount pending) |
 | Jobs | `load-list`, `load-status`, `transfer` | ✅ list + progress (cancel pending) |
+| Transfers | `fs put`, `fs get` | ✅ live progress bars, per-file speed, cancel |
 | Config | `admin config` | ✅ runtime config viewer |
 | Command line | all of the above | ✅ `:` prompt with CLI-style syntax |
 
-Not yet wired: `fsck`, `bench`, `put`/`get`/`cat` transfers, `export`,
-`transfer` submission, `mount`/`umount` mutations, `chmod`/`chown`, `du`/`count`.
+Not yet wired: `fsck`, `bench`, `cat` viewer, `export`, `transfer` submission,
+`mount`/`umount` mutations, `chmod`/`chown`, `du`/`count`.
+
+### Transfers
+
+Uploads and downloads stream in `write_chunk_size` / `read_chunk_size` slices on
+curvine's runtime, so the UI never blocks. Progress is throttled to ~8 events per
+second regardless of file size or bandwidth, and each transfer carries its own
+cancellation flag that the worker checks between chunks.
 
 ## Usage
 
@@ -43,7 +51,7 @@ Options mirror the CLI's precedence rules (`--conf` > `CURVINE_CONF_FILE` > defa
 | Key | Action |
 |---|---|
 | `tab` / `shift-tab` | switch panel |
-| `1`–`6` | jump to panel |
+| `1`–`7` | jump to panel |
 | `j` / `k`, `↑` / `↓` | move selection |
 | `enter` / `l` | enter directory |
 | `backspace` / `h` | parent directory |
@@ -51,8 +59,11 @@ Options mirror the CLI's precedence rules (`--conf` > `CURVINE_CONF_FILE` > defa
 | `.` | toggle hidden files |
 | `m` | create directory |
 | `d` / `D` | delete / delete recursive |
+| `p` / `g` | upload / download (put / get form) |
+| `x` | cancel selected transfer |
+| `c` | clear finished transfers |
 | `r` | refresh panel |
-| `:` | command line (`ls`, `cd`, `mkdir`, `rm`, `mv`, `load`, `panel`, `refresh`) |
+| `:` | command line (`ls`, `cd`, `mkdir`, `rm`, `mv`, `put`, `get`, `cancel`, `load`, `panel`, `refresh`) |
 | `?` | help |
 | `q` / `ctrl-c` | quit |
 
@@ -65,10 +76,12 @@ src/
 ├── config.rs      ClusterConf loading with CLI overrides
 ├── event.rs       input thread, tick thread, async task results
 ├── rpc/           async facade over UnifiedFileSystem + JobMasterClient
+├── transfer.rs    streaming upload/download with throttled progress
 ├── ui/
 │   ├── mod.rs     frame layout, shared formatters
 │   ├── theme.rs   palette
 │   ├── components.rs  block/gauge/spinner/help widgets
+│   ├── transfers.rs   progress table + put/get form
 │   └── {dashboard,files,nodes,jobs}.rs
 └── tests.rs       render smoke tests across panels and terminal sizes
 ```

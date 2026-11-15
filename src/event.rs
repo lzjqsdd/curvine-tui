@@ -31,6 +31,18 @@ pub enum TaskResult {
     Mounts(Result<Vec<MountRow>, String>),
     Jobs(Result<Vec<JobRow>, String>),
     Config(Result<Vec<ConfigRow>, String>),
+    TransferProgress {
+        id: u64,
+        transferred: u64,
+        /// Total size in bytes; 0 while still unknown (e.g. a download that has
+        /// not opened its reader yet).
+        total: u64,
+        speed: u64,
+    },
+    TransferDone {
+        id: u64,
+        result: std::result::Result<u64, String>,
+    },
     OpDone {
         label: String,
         result: Result<String, String>,
@@ -104,6 +116,49 @@ pub struct JobRow {
 pub struct ConfigRow {
     pub key: String,
     pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferKind {
+    Upload,
+    Download,
+}
+
+impl TransferKind {
+    pub fn arrow(self) -> &'static str {
+        match self {
+            TransferKind::Upload => "up",
+            TransferKind::Download => "down",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferState {
+    Queued,
+    Running,
+    Done,
+    Failed,
+    Cancelled,
+}
+
+impl TransferState {
+    pub fn label(self) -> &'static str {
+        match self {
+            TransferState::Queued => "queued",
+            TransferState::Running => "running",
+            TransferState::Done => "done",
+            TransferState::Failed => "failed",
+            TransferState::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            TransferState::Done | TransferState::Failed | TransferState::Cancelled
+        )
+    }
 }
 
 /// Spawns the crossterm reader thread. Returns immediately.

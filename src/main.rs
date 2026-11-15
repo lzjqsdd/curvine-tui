@@ -8,6 +8,7 @@ mod event;
 mod rpc;
 #[cfg(test)]
 mod tests;
+mod transfer;
 mod ui;
 
 use std::time::Duration;

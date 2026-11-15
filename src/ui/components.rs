@@ -71,7 +71,7 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
 
     let rows: Vec<(&str, &str)> = vec![
         ("tab / shift-tab", "switch panel"),
-        ("1 … 6", "jump to panel"),
+        ("1 … 7", "jump to panel"),
         ("j / k  ↑ ↓", "move selection (files)"),
         ("enter / l", "enter directory"),
         ("backspace / h", "parent directory"),
@@ -79,8 +79,11 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
         (".", "toggle hidden files"),
         ("m", "create directory"),
         ("d / D", "delete / delete recursive"),
+        ("p / g", "upload / download (put / get)"),
+        ("x", "cancel selected transfer"),
+        ("c", "clear finished transfers"),
         ("r", "refresh panel"),
-        (":", "command line (ls, cd, mkdir, rm, mv, load…)"),
+        (":", "command line (ls, cd, mkdir, rm, mv, put, get, load…)"),
         ("?", "toggle this help"),
         ("q / ctrl-c", "quit"),
     ];

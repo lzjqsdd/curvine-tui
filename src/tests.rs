@@ -8,8 +8,10 @@ use ratatui::{backend::TestBackend, Terminal};
 use tokio::sync::mpsc;
 
 use crate::app::{
-    join_path, normalize_path, parent_path, App, FilesState, Loadable, Panel,
+    join_path, normalize_path, parent_path, App, FilesState, Loadable, Panel, TransferEntry,
 };
+use crate::event::{TransferKind, TransferState};
+use crate::transfer::new_cancel_flag;
 use crate::config::{AppConfig, ConfigOverrides};
 use crate::rpc::ClusterClient;
 
@@ -35,6 +37,10 @@ fn test_app() -> App {
         mounts: Loadable::default(),
         jobs: Loadable::default(),
         config: Loadable::default(),
+        transfers: Vec::new(),
+        transfer_selected: 0,
+        form: None,
+        next_transfer_id: 1,
         log: vec!["test".to_string()],
         help_visible: false,
     }
@@ -137,6 +143,45 @@ fn populate_sample_data(app: &mut App) {
         key: "master.worker_timeout_ms".into(),
         value: "60000".into(),
     }]);
+
+    app.transfers = vec![
+        TransferEntry {
+            id: 1,
+            kind: TransferKind::Upload,
+            local: "/tmp/events.parquet".into(),
+            remote: "/data/events.parquet".into(),
+            total: 8 * 1024 * 1024,
+            transferred: 3 * 1024 * 1024,
+            speed: 2 * 1024 * 1024,
+            state: TransferState::Running,
+            error: None,
+            cancel: new_cancel_flag(),
+        },
+        TransferEntry {
+            id: 2,
+            kind: TransferKind::Download,
+            local: "/tmp/out.csv".into(),
+            remote: "/data/out.csv".into(),
+            total: 1024,
+            transferred: 1024,
+            speed: 0,
+            state: TransferState::Done,
+            error: None,
+            cancel: new_cancel_flag(),
+        },
+        TransferEntry {
+            id: 3,
+            kind: TransferKind::Upload,
+            local: "/tmp/broken".into(),
+            remote: "/data/broken".into(),
+            total: 100,
+            transferred: 40,
+            speed: 0,
+            state: TransferState::Failed,
+            error: Some("no space left".into()),
+            cancel: new_cancel_flag(),
+        },
+    ];
 }
 
 #[test]
@@ -189,6 +234,99 @@ fn renders_at_pathological_sizes_without_panicking() {
             render_panel(panel, w, h, true);
         }
     }
+}
+
+#[test]
+fn every_panel_tab_is_reachable_at_narrow_widths() {
+    // Regression: ratatui's Tabs adds 1 cell of padding on each side, which
+    // used to push the trailing tabs off-screen at 80 columns.
+    for width in [60u16, 80, 100, 120] {
+        let out = render_panel(Panel::Config, width, 30, false);
+        let header = out.lines().nth(1).unwrap_or_default();
+        assert!(
+            header.contains("7"),
+            "selected tab index 7 missing from header at width {width}: {header:?}"
+        );
+    }
+}
+
+#[test]
+fn transfer_rows_render_progress_and_state() {
+    let out = render_panel(Panel::Transfers, 120, 20, true);
+    assert!(out.contains("running"), "running state missing");
+    assert!(out.contains("done"), "done state missing");
+    assert!(out.contains("failed"), "failed state missing");
+    assert!(out.contains("2.0 MiB/s"), "speed missing");
+    // 3.0/8.0 MiB ≈ 38%
+    assert!(out.contains("38%"), "progress percentage missing");
+}
+
+#[test]
+fn transfer_form_renders_both_fields() {
+    let mut app = test_app();
+    app.panel = Panel::Transfers;
+    app.mode = crate::app::InputMode::Transfer;
+    app.form = Some(crate::app::TransferForm::upload("/data"));
+
+    let backend = TestBackend::new(100, 30);
+    let mut term = Terminal::new(backend).unwrap();
+    term.draw(|f| crate::ui::render(f, &app)).unwrap();
+    let buf = term.backend().buffer().clone();
+    let text: String = (0..buf.area.height)
+        .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
+        .map(|(x, y)| buf[(x, y)].symbol().to_string())
+        .collect();
+
+    assert!(text.contains("upload"), "form title missing");
+    assert!(text.contains("local"), "local field label missing");
+    assert!(text.contains("remote"), "remote field label missing");
+    assert!(text.contains("/data/"), "cwd-derived remote path missing");
+}
+
+#[test]
+fn transfer_ratio_is_clamped_and_zero_safe() {
+    let mk = |total: u64, transferred: u64, state: TransferState| TransferEntry {
+        id: 1,
+        kind: TransferKind::Upload,
+        local: "/a".into(),
+        remote: "/b".into(),
+        total,
+        transferred,
+        speed: 0,
+        state,
+        error: None,
+        cancel: new_cancel_flag(),
+    };
+
+    assert_eq!(mk(0, 0, TransferState::Running).ratio(), 0.0);
+    assert_eq!(mk(0, 0, TransferState::Done).ratio(), 1.0);
+    assert_eq!(mk(100, 50, TransferState::Running).ratio(), 0.5);
+    // Over-reporting must not exceed 1.0 (gauge would panic).
+    assert_eq!(mk(100, 150, TransferState::Running).ratio(), 1.0);
+}
+
+#[test]
+fn cancelling_a_running_transfer_sets_terminal_state() {
+    let mut app = test_app();
+    app.transfers = vec![TransferEntry {
+        id: 9,
+        kind: TransferKind::Upload,
+        local: "/a".into(),
+        remote: "/b".into(),
+        total: 100,
+        transferred: 10,
+        speed: 0,
+        state: TransferState::Running,
+        error: None,
+        cancel: new_cancel_flag(),
+    }];
+    app.transfer_selected = 0;
+    let flag = app.transfers[0].cancel.clone();
+
+    app.cancel_selected_transfer();
+
+    assert!(flag.load(std::sync::atomic::Ordering::Relaxed));
+    assert_eq!(app.transfers[0].state, TransferState::Cancelled);
 }
 
 // ---------------------------------------------------------------- pure helpers

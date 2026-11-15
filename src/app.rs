@@ -7,9 +7,11 @@ use tokio::sync::mpsc;
 
 use crate::config::AppConfig;
 use crate::event::{
-    AppEvent, ClusterSnapshot, ConfigRow, FsEntry, JobRow, MountRow, TaskResult, WorkerRow,
+    AppEvent, ClusterSnapshot, ConfigRow, FsEntry, JobRow, MountRow, TaskResult, TransferKind,
+    TransferState, WorkerRow,
 };
 use crate::rpc::ClusterClient;
+use crate::transfer::{new_cancel_flag, spawn_transfer, CancelFlag};
 use curvine_runtime::runtime::RpcRuntime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,16 +21,18 @@ pub enum Panel {
     Nodes,
     Mounts,
     Jobs,
+    Transfers,
     Config,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 6] = [
+    pub const ALL: [Panel; 7] = [
         Panel::Dashboard,
         Panel::Files,
         Panel::Nodes,
         Panel::Mounts,
         Panel::Jobs,
+        Panel::Transfers,
         Panel::Config,
     ];
 
@@ -39,6 +43,20 @@ impl Panel {
             Panel::Nodes => "Nodes",
             Panel::Mounts => "Mounts",
             Panel::Jobs => "Jobs",
+            Panel::Transfers => "Transfers",
+            Panel::Config => "Config",
+        }
+    }
+
+    /// Compact label used when the tab bar cannot fit full titles.
+    pub fn short_title(self) -> &'static str {
+        match self {
+            Panel::Dashboard => "Dash",
+            Panel::Files => "Files",
+            Panel::Nodes => "Nodes",
+            Panel::Mounts => "Mounts",
+            Panel::Jobs => "Jobs",
+            Panel::Transfers => "Xfer",
             Panel::Config => "Config",
         }
     }
@@ -55,6 +73,8 @@ pub enum InputMode {
     Command,
     /// Filter box in the file browser.
     Filter,
+    /// Guided put/get form.
+    Transfer,
 }
 
 /// Per-panel load state, so we can render spinners and errors uniformly.
@@ -150,6 +170,81 @@ impl FilesState {
     }
 }
 
+/// A single in-flight or finished transfer, rendered in the Transfers panel.
+pub struct TransferEntry {
+    pub id: u64,
+    pub kind: TransferKind,
+    pub local: String,
+    pub remote: String,
+    pub total: u64,
+    pub transferred: u64,
+    pub speed: u64,
+    pub state: TransferState,
+    pub error: Option<String>,
+    pub cancel: CancelFlag,
+}
+
+impl TransferEntry {
+    pub fn ratio(&self) -> f64 {
+        if self.total == 0 {
+            if self.state == TransferState::Done {
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            (self.transferred as f64 / self.total as f64).clamp(0.0, 1.0)
+        }
+    }
+}
+
+/// Two-field put/get form. `focus` selects which field receives keystrokes.
+pub struct TransferForm {
+    pub kind: TransferKind,
+    pub local: String,
+    pub remote: String,
+    pub focus: usize,
+    pub error: Option<String>,
+}
+
+impl TransferForm {
+    pub fn upload(cwd: &str) -> Self {
+        Self {
+            kind: TransferKind::Upload,
+            local: String::new(),
+            remote: if cwd == "/" {
+                "/".to_string()
+            } else {
+                format!("{cwd}/")
+            },
+            focus: 0,
+            error: None,
+        }
+    }
+
+    pub fn download(cwd: &str) -> Self {
+        Self {
+            kind: TransferKind::Download,
+            local: String::new(),
+            remote: if cwd == "/" {
+                "/".to_string()
+            } else {
+                format!("{cwd}/")
+            },
+            focus: 1,
+            error: None,
+        }
+    }
+
+    fn field_mut(&mut self) -> &mut String {
+        if self.focus == 0 {
+            &mut self.local
+        } else {
+            &mut self.remote
+        }
+    }
+}
+
 pub struct App {
     pub cfg: AppConfig,
     pub client: ClusterClient,
@@ -168,6 +263,11 @@ pub struct App {
     pub mounts: Loadable<Vec<MountRow>>,
     pub jobs: Loadable<Vec<JobRow>>,
     pub config: Loadable<Vec<ConfigRow>>,
+
+    pub transfers: Vec<TransferEntry>,
+    pub transfer_selected: usize,
+    pub form: Option<TransferForm>,
+    pub(crate) next_transfer_id: u64,
 
     pub log: Vec<String>,
     pub help_visible: bool,
@@ -194,6 +294,10 @@ impl App {
             mounts: Loadable::default(),
             jobs: Loadable::default(),
             config: Loadable::default(),
+            transfers: Vec::new(),
+            transfer_selected: 0,
+            form: None,
+            next_transfer_id: 1,
             log: Vec::new(),
             help_visible: false,
         };
@@ -352,6 +456,7 @@ impl App {
             Panel::Nodes => self.refresh_cluster(),
             Panel::Mounts => self.refresh_mounts(),
             Panel::Jobs => self.refresh_jobs(),
+            Panel::Transfers => {} // driven by progress events, not polling
             Panel::Config => self.refresh_config(),
         }
     }
@@ -420,6 +525,56 @@ impl App {
                     self.set_status(format!("jobs: {e}"), true);
                 }
             },
+            TaskResult::TransferProgress {
+                id,
+                transferred,
+                total,
+                speed,
+            } => {
+                if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
+                    t.transferred = transferred;
+                    if total > 0 {
+                        t.total = total;
+                    }
+                    t.speed = speed;
+                    t.state = TransferState::Running;
+                }
+            }
+            TaskResult::TransferDone { id, result } => {
+                let snapshot = self.transfers.iter().position(|t| t.id == id);
+                if let Some(idx) = snapshot {
+                    let already_cancelled = self.transfers[idx].state == TransferState::Cancelled;
+                    match result {
+                        Ok(total) => {
+                            let t = &mut self.transfers[idx];
+                            t.state = TransferState::Done;
+                            t.total = total;
+                            t.transferred = total;
+                            t.speed = 0;
+                            self.set_status(
+                                format!("transfer #{id} complete ({} bytes)", total),
+                                false,
+                            );
+                        }
+                        Err(e) => {
+                            let t = &mut self.transfers[idx];
+                            t.speed = 0;
+                            // A cancel surfaces as an error from the worker; keep
+                            // the user-facing state accurate.
+                            if already_cancelled || e.contains("cancelled") {
+                                t.state = TransferState::Cancelled;
+                            } else {
+                                t.state = TransferState::Failed;
+                                t.error = Some(e.clone());
+                            }
+                            self.set_status(format!("transfer #{id}: {e}"), true);
+                        }
+                    }
+                }
+                if matches!(self.panel, Panel::Files) {
+                    self.refresh_files();
+                }
+            }
             TaskResult::Config(res) => match res {
                 Ok(c) => self.config.ok(c),
                 Err(e) => {
@@ -441,6 +596,7 @@ impl App {
         match self.mode {
             InputMode::Command => return self.on_command_key(key),
             InputMode::Filter => return self.on_filter_key(key),
+            InputMode::Transfer => return self.on_form_key(key),
             InputMode::Normal => {}
         }
 
@@ -470,16 +626,21 @@ impl App {
                 self.panel = Panel::ALL[(i + Panel::ALL.len() - 1) % Panel::ALL.len()];
                 self.refresh_panel();
             }
-            KeyCode::Char(c @ '1'..='6') => {
+            KeyCode::Char(c @ '1'..='7') => {
                 self.panel = Panel::ALL[(c as usize) - ('1' as usize)];
                 self.refresh_panel();
             }
             KeyCode::Char('r') => self.refresh_panel(),
+            KeyCode::Char('p') => self.open_form(TransferKind::Upload),
+            KeyCode::Char('g') => self.open_form(TransferKind::Download),
             _ => self.on_panel_key(key),
         }
     }
 
     fn on_panel_key(&mut self, key: KeyEvent) {
+        if self.panel == Panel::Transfers {
+            return self.on_transfers_key(key);
+        }
         if self.panel == Panel::Files {
             match key.code {
                 KeyCode::Down | KeyCode::Char('j') => self.files.move_down(),
@@ -504,6 +665,158 @@ impl App {
                 _ => {}
             }
         }
+    }
+
+    fn on_transfers_key(&mut self, key: KeyEvent) {
+        let n = self.transfers.len();
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                if n > 0 {
+                    self.transfer_selected = (self.transfer_selected + 1).min(n - 1);
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.transfer_selected = self.transfer_selected.saturating_sub(1);
+            }
+            KeyCode::Char('x') | KeyCode::Delete => self.cancel_selected_transfer(),
+            KeyCode::Char('c') => self.clear_finished_transfers(),
+            KeyCode::Char('p') => self.open_form(TransferKind::Upload),
+            KeyCode::Char('g') => self.open_form(TransferKind::Download),
+            _ => {}
+        }
+    }
+
+    pub(crate) fn cancel_selected_transfer(&mut self) {
+        let Some(t) = self.transfers.get_mut(self.transfer_selected) else {
+            return;
+        };
+        if t.state.is_terminal() {
+            self.set_status("transfer already finished", true);
+            return;
+        }
+        t.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        t.state = TransferState::Cancelled;
+        let id = t.id;
+        self.set_status(format!("transfer #{id} cancel requested"), false);
+    }
+
+    fn clear_finished_transfers(&mut self) {
+        let before = self.transfers.len();
+        self.transfers.retain(|t| !t.state.is_terminal());
+        let removed = before - self.transfers.len();
+        if self.transfers.len() <= self.transfer_selected {
+            self.transfer_selected = self.transfers.len().saturating_sub(1);
+        }
+        self.set_status(format!("cleared {removed} finished transfer(s)"), false);
+    }
+
+    fn open_form(&mut self, kind: TransferKind) {
+        if self.mode == InputMode::Transfer {
+            return;
+        }
+        let cwd = self.files.cwd.clone();
+        self.form = Some(match kind {
+            TransferKind::Upload => TransferForm::upload(&cwd),
+            TransferKind::Download => TransferForm::download(&cwd),
+        });
+        self.mode = InputMode::Transfer;
+    }
+
+    fn close_form(&mut self) {
+        self.form = None;
+        self.mode = InputMode::Normal;
+    }
+
+    fn on_form_key(&mut self, key: KeyEvent) {
+        let Some(form) = self.form.as_mut() else {
+            self.mode = InputMode::Normal;
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => self.close_form(),
+            KeyCode::Tab | KeyCode::BackTab => form.focus = 1 - form.focus,
+            KeyCode::Backspace => {
+                form.field_mut().pop();
+            }
+            KeyCode::Char(c) => form.field_mut().push(c),
+            KeyCode::Enter => self.submit_form(),
+            _ => {}
+        }
+    }
+
+    fn submit_form(&mut self) {
+        let Some(form) = self.form.as_ref() else { return };
+        let (local, remote) = (form.local.trim().to_string(), form.remote.trim().to_string());
+        if local.is_empty() || remote.is_empty() {
+            if let Some(f) = self.form.as_mut() {
+                f.error = Some("both fields are required".to_string());
+            }
+            return;
+        }
+        let kind = form.kind;
+        let cwd = self.files.cwd.clone();
+        self.close_form();
+
+        // Resolve a bare filename against the browsing directory so the form
+        // stays terse for the common case.
+        let remote = crate::app::normalize_path(&remote, &cwd);
+        let local_path = if std::path::Path::new(&local).is_absolute() {
+            std::path::PathBuf::from(&local)
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .join(&local)
+        };
+
+        self.start_transfer(kind, local_path, remote);
+    }
+
+    /// Queue and spawn a transfer, appending it to the Transfers panel.
+    pub fn start_transfer(
+        &mut self,
+        kind: TransferKind,
+        local: std::path::PathBuf,
+        remote: String,
+    ) {
+        let id = self.next_transfer_id;
+        self.next_transfer_id += 1;
+
+        let cancel = new_cancel_flag();
+        let total = match kind {
+            TransferKind::Upload => std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0),
+            TransferKind::Download => 0,
+        };
+
+        self.transfers.push(TransferEntry {
+            id,
+            kind,
+            local: local.display().to_string(),
+            remote: remote.clone(),
+            total,
+            transferred: 0,
+            speed: 0,
+            state: TransferState::Queued,
+            error: None,
+            cancel: cancel.clone(),
+        });
+        self.transfer_selected = self.transfers.len() - 1;
+        self.panel = Panel::Transfers;
+
+        spawn_transfer(
+            self.client.clone(),
+            self.tx.clone(),
+            id,
+            kind,
+            local.clone(),
+            remote.clone(),
+            cancel,
+        );
+
+        let what = match kind {
+            TransferKind::Upload => format!("up {} -> {remote}", local.display()),
+            TransferKind::Download => format!("down {remote} -> {}", local.display()),
+        };
+        self.set_status(format!("transfer #{id}: {what}"), false);
     }
 
     fn files_enter(&mut self) {
@@ -741,6 +1054,33 @@ impl App {
                 }
                 None => self.set_status("usage: load <path>", true),
             },
+            "put" => match (parts.get(1), parts.get(2)) {
+                (Some(local), Some(remote)) => {
+                    let remote = normalize_path(remote, &self.files.cwd);
+                    self.start_transfer(
+                        TransferKind::Upload,
+                        std::path::PathBuf::from(local),
+                        remote,
+                    );
+                }
+                _ => self.set_status("usage: put <local> <remote>", true),
+            },
+            "get" => match (parts.get(1), parts.get(2)) {
+                (Some(remote), Some(local)) => {
+                    let remote = normalize_path(remote, &self.files.cwd);
+                    self.start_transfer(
+                        TransferKind::Download,
+                        std::path::PathBuf::from(local),
+                        remote,
+                    );
+                }
+                _ => self.set_status("usage: get <remote> <local>", true),
+            },
+            "cancel" => {
+                self.transfer_selected = 0;
+                self.panel = Panel::Transfers;
+                self.cancel_selected_transfer();
+            }
             "refresh" | "reload" => self.refresh_panel(),
             "panel" => match parts.get(1).and_then(|p| match *p {
                 "dashboard" => Some(Panel::Dashboard),
@@ -748,6 +1088,7 @@ impl App {
                 "nodes" => Some(Panel::Nodes),
                 "mounts" => Some(Panel::Mounts),
                 "jobs" => Some(Panel::Jobs),
+                "transfers" | "xfer" => Some(Panel::Transfers),
                 "config" => Some(Panel::Config),
                 _ => None,
             }) {
@@ -756,7 +1097,7 @@ impl App {
                     self.refresh_panel();
                 }
                 None => self.set_status(
-                    "usage: panel <dashboard|files|nodes|mounts|jobs|config>",
+                    "usage: panel <dashboard|files|nodes|mounts|jobs|transfers|config>",
                     true,
                 ),
             },

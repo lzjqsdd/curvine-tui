@@ -696,6 +696,7 @@ dependencies = [
  "curvine-model",
  "curvine-net",
  "curvine-runtime",
+ "curvine-sys",
  "curvine-unified-fs",
  "futures",
  "ratatui",

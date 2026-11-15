@@ -29,6 +29,7 @@ curvine-job-client = { path = "../curvine/crates/client/curvine-job-client" }
 curvine-fs-api = { path = "../curvine/crates/common/curvine-fs-api" }
 curvine-model = { path = "../curvine/crates/common/curvine-model" }
 curvine-net = { path = "../curvine/crates/core/net" }
+curvine-sys = { path = "../curvine/crates/core/curvine-sys" }
 curvine-runtime = { path = "../curvine/crates/core/runtime" }
 curvine-error = { path = "../curvine/crates/common/curvine-error" }
 

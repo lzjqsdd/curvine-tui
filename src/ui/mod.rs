@@ -15,6 +15,7 @@ pub mod dashboard;
 pub mod files;
 pub mod jobs;
 pub mod nodes;
+pub mod transfers;
 pub mod theme;
 
 use theme as th;
@@ -38,6 +39,7 @@ pub fn render(f: &mut Frame, app: &App) {
         Panel::Nodes => nodes::render(f, app, chunks[1]),
         Panel::Mounts => jobs::render_mounts(f, app, chunks[1]),
         Panel::Jobs => jobs::render(f, app, chunks[1]),
+        Panel::Transfers => transfers::render(f, app, chunks[1]),
         Panel::Config => jobs::render_config(f, app, chunks[1]),
     }
 
@@ -50,11 +52,34 @@ pub fn render(f: &mut Frame, app: &App) {
 }
 
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
-    let titles: Vec<Line> = Panel::ALL
+    // The tab bar degrades gracefully: full titles, then short titles, then
+    // bare numbers. Without this, panels past the width limit silently vanish.
+    let inner = area.width.saturating_sub(2) as usize;
+    let long: Vec<String> = Panel::ALL
         .iter()
         .enumerate()
-        .map(|(i, p)| Line::from(format!(" {} {} ", i + 1, p.title())))
+        .map(|(i, p)| format!(" {} {} ", i + 1, p.title()))
         .collect();
+    let short: Vec<String> = Panel::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, p)| format!(" {} {} ", i + 1, p.short_title()))
+        .collect();
+    let minimal: Vec<String> = Panel::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!(" {} ", i + 1))
+        .collect();
+
+    let width = |v: &[String]| v.iter().map(|s| s.chars().count()).sum::<usize>();
+    let labels = if width(&long) <= inner {
+        long
+    } else if width(&short) <= inner {
+        short
+    } else {
+        minimal
+    };
+    let titles: Vec<Line> = labels.into_iter().map(Line::from).collect();
 
     let tabs = Tabs::new(titles)
         .block(
@@ -69,6 +94,9 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
                 ))
                 .title_alignment(ratatui::layout::Alignment::Left),
         )
+        // Labels already carry their own spacing; ratatui's default 1-cell
+        // left/right padding would overflow the bar and hide trailing panels.
+        .padding("", "")
         .select(app.panel.index())
         .highlight_style(
             Style::default()
@@ -84,10 +112,12 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
     let (text, style) = if app.status_is_error {
         (app.status.clone(), Style::default().fg(th::ERROR))
     } else if app.status.is_empty() {
-        (
-            format!("masters: {}", app.cfg.master_addrs.join(", ")),
-            Style::default().fg(th::MUTED),
-        )
+        let masters = if app.cfg.master_addrs.is_empty() {
+            "no masters configured — pass --master-addrs or --conf".to_string()
+        } else {
+            format!("masters: {}", app.cfg.master_addrs.join(", "))
+        };
+        (masters, Style::default().fg(th::MUTED))
     } else {
         (app.status.clone(), Style::default().fg(th::OK))
     };
@@ -115,9 +145,21 @@ fn render_hints(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    if app.mode == InputMode::Transfer {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "tab switch field   enter transfer   esc cancel",
+                Style::default().fg(th::MUTED),
+            ))),
+            area,
+        );
+        return;
+    }
+
     let hints = match app.panel {
-        Panel::Files => "↑↓ move  ⏎ enter  ⌫ up  / filter  m mkdir  d rm  D rm -r  r refresh  ? help  q quit",
-        _ => "tab next panel  1-6 jump  r refresh  : command  ? help  q quit",
+        Panel::Files => "↑↓ move ⏎ enter ⌫ up / filter m mkdir p put g get d rm ? help q quit",
+        Panel::Transfers => "↑↓ select x cancel c clear p put g get r refresh ? help q quit",
+        _ => "tab panels 1-7 jump p put g get r refresh : cmd ? help q quit",
     };
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(

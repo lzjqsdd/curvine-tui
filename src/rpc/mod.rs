@@ -45,6 +45,28 @@ impl ClusterClient {
         self.rt.clone()
     }
 
+    /// Escape hatch for callers that need the raw filesystem (option builders,
+    /// config). Kept narrow on purpose.
+    pub fn inner(&self) -> &UnifiedFileSystem {
+        &self.fs
+    }
+
+    pub async fn open_writer(
+        &self,
+        path: &Path,
+        opts: curvine_model::CreateFileOpts,
+        flags: curvine_model::OpenFlags,
+    ) -> std::result::Result<curvine_unified_fs::UnifiedWriter, curvine_error::FsError> {
+        self.fs.open_with_opts(path, opts, flags).await
+    }
+
+    pub async fn open_reader(
+        &self,
+        path: &Path,
+    ) -> std::result::Result<curvine_unified_fs::UnifiedReader, curvine_error::FsError> {
+        self.fs.open(path).await
+    }
+
     // ---------------------------------------------------------------- fs ops
 
     pub async fn ls(&self, path: &str) -> Result<Vec<FileStatus>> {
