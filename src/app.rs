@@ -335,9 +335,9 @@ impl MountStorage {
 /// action than the one the user was shown.
 #[derive(Debug, Clone)]
 pub enum PendingAction {
-    DeleteFile { path: String, recursive: bool },
+    Delete { paths: Vec<String>, recursive: bool },
     Umount { path: String },
-    FreeFile { path: String, recursive: bool },
+    Free { paths: Vec<String>, recursive: bool },
 }
 
 pub struct PendingConfirm {
@@ -1172,6 +1172,13 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => self.help_visible = !self.help_visible,
+            KeyCode::Esc => {
+                if self.help_visible {
+                    self.help_visible = false;
+                } else if self.panel == Panel::Files && !self.files.marked.is_empty() {
+                    self.clear_marks();
+                }
+            }
             KeyCode::Char(':') => {
                 self.mode = InputMode::Command;
                 self.command.clear();
@@ -1723,6 +1730,12 @@ impl App {
                     return;
                 };
                 self.mode = InputMode::Normal;
+                if matches!(
+                    pending.action,
+                    PendingAction::Delete { .. } | PendingAction::Free { .. }
+                ) {
+                    self.files.marked.clear();
+                }
                 self.run_pending(pending.action);
             }
             _ => {}
@@ -1735,31 +1748,52 @@ impl App {
         let tx = self.tx.clone();
 
         let (label, msg) = match &action {
-            PendingAction::DeleteFile { path, recursive } => (
+            PendingAction::Delete { paths, recursive } => (
                 "delete".to_string(),
-                if *recursive {
-                    format!("removed tree {path}")
+                if paths.len() == 1 {
+                    if *recursive {
+                        format!("removed tree {}", paths[0])
+                    } else {
+                        format!("removed {}", paths[0])
+                    }
                 } else {
-                    format!("removed {path}")
+                    format!("removed {} items", paths.len())
                 },
             ),
             PendingAction::Umount { path } => ("umount".to_string(), format!("unmounted {path}")),
-            PendingAction::FreeFile { path, .. } => ("free".to_string(), format!("freed {path}")),
+            PendingAction::Free { paths, .. } => (
+                if paths.len() == 1 { "free".to_string() } else { "free batch".to_string() },
+                if paths.len() == 1 {
+                    format!("freed {}", paths[0])
+                } else {
+                    format!("freed {} items", paths.len())
+                },
+            ),
         };
 
         self.spawn_call(async move {
-            let res = match action {
-                PendingAction::DeleteFile { path, recursive } => {
-                    client.delete(&path, recursive).await
+            let res = async move {
+                match action {
+                    PendingAction::Delete { paths, recursive } => {
+                        for path in &paths {
+                            client.delete(path, recursive).await.map_err(|e| e.to_string())?;
+                        }
+                    }
+                    PendingAction::Umount { path } => {
+                        client.umount(&path).await.map_err(|e| e.to_string())?;
+                    }
+                    PendingAction::Free { paths, recursive } => {
+                        for path in &paths {
+                            client.free(path, recursive).await.map_err(|e| e.to_string())?;
+                        }
+                    }
                 }
-                PendingAction::Umount { path } => client.umount(&path).await,
-                PendingAction::FreeFile { path, recursive } => {
-                    client.free(&path, recursive).await
-                }
-            };
+                Ok::<_, String>(())
+            }
+            .await;
             let _ = tx.send(AppEvent::TaskDone(TaskResult::OpDone {
                 label,
-                result: res.map(|_| msg).map_err(|e| e.to_string()),
+                result: res.map(|_| msg),
             }));
         });
     }
@@ -1851,6 +1885,17 @@ impl App {
                     self.mode = InputMode::Filter;
                     self.files.filter.clear();
                 }
+                KeyCode::Char(' ') => {
+                    if let Some(path) = self.files.selected_path() {
+                        self.files.toggle_mark(path);
+                    }
+                }
+                KeyCode::Char('a') => {
+                    self.files.mark_all_visible();
+                    let n = self.files.marked.len();
+                    self.set_status(format!("marked {n} item(s)"), false);
+                }
+                KeyCode::Char('u') => self.clear_marks(),
                 KeyCode::Char('.') => {
                     self.files.show_hidden = !self.files.show_hidden;
                     self.files.selected = 0;
@@ -2065,8 +2110,13 @@ impl App {
     }
 
     /// Ask before deleting. Deleting a directory always requires `-r`, so the
-    /// prompt states exactly what will be removed.
+    /// prompt states exactly what will be removed. When multiple entries are
+    /// marked, one confirmation covers the whole batch.
     fn files_request_delete(&mut self, recursive: bool) {
+        if !self.files.marked.is_empty() {
+            self.request_batch(false);
+            return;
+        }
         let Some(entry) = self.files.selected_entry().cloned() else {
             self.set_status("nothing selected", true);
             return;
@@ -2095,8 +2145,8 @@ impl App {
         });
 
         self.confirm = Some(PendingConfirm {
-            action: PendingAction::DeleteFile {
-                path: path.clone(),
+            action: PendingAction::Delete {
+                paths: vec![path.clone()],
                 recursive,
             },
             title: if recursive { "delete (recursive)" } else { "delete" }.to_string(),
@@ -2107,14 +2157,18 @@ impl App {
     }
 
     fn files_request_free(&mut self, recursive: bool) {
+        if !self.files.marked.is_empty() {
+            self.request_batch(true);
+            return;
+        }
         let Some(entry) = self.files.selected_entry().cloned() else {
             self.set_status("nothing selected", true);
             return;
         };
         let path = join_path(&self.files.cwd, &entry.name);
         self.confirm = Some(PendingConfirm {
-            action: PendingAction::FreeFile {
-                path: path.clone(),
+            action: PendingAction::Free {
+                paths: vec![path.clone()],
                 recursive,
             },
             title: "free cached blocks".to_string(),
@@ -2123,6 +2177,35 @@ impl App {
                 "drops the Curvine block replicas while keeping the entry.".to_string(),
                 "re-reading the path pulls it back from the mounted ufs.".to_string(),
             ],
+        });
+        self.mode = InputMode::Confirm;
+    }
+
+    /// Batch confirmation for delete (`free == false`) or free.
+    fn request_batch(&mut self, free: bool) {
+        let paths = self.files.marked.clone();
+        let n = paths.len();
+        let what = if free { "free" } else { "delete" };
+        let mut lines = vec![
+            format!("count      {n} marked items"),
+            format!("scope      every marked path under {}", self.files.cwd),
+            String::new(),
+            format!("{what} {n} marked items?"),
+        ];
+        if !free {
+            lines.push("this removes the entries and all of their block replicas.".to_string());
+        } else {
+            lines.push("cached blocks are dropped; the entries themselves stay.".to_string());
+        }
+        self.confirm = Some(PendingConfirm {
+            action: if free {
+                PendingAction::Free { paths, recursive: true }
+            } else {
+                PendingAction::Delete { paths, recursive: true }
+            },
+            title: if free { "free marked items" } else { "delete marked items" }.to_string(),
+            target: format!("{n} marked items"),
+            lines,
         });
         self.mode = InputMode::Confirm;
     }

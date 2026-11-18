@@ -21,9 +21,9 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // breadcrumb
+            Constraint::Length(1), // breadcrumb (borderless)
             Constraint::Min(4),    // listing
-            Constraint::Length(3), // selected entry detail
+            Constraint::Length(1), // selected entry detail (borderless)
         ])
         .split(area);
 
@@ -39,20 +39,13 @@ fn render_breadcrumb(f: &mut Frame, app: &App, area: Rect) {
             format!("{} ", icons::DIR_OPEN),
             Style::default().fg(th::ACCENT),
         ),
+        Span::styled(
+            app.files.cwd.clone(),
+            Style::default()
+                .fg(th::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
     ];
-    let parts: Vec<&str> = app.files.cwd.split('/').filter(|s| !s.is_empty()).collect();
-    spans.push(Span::styled(
-        "/",
-        Style::default()
-            .fg(th::ACCENT)
-            .add_modifier(Modifier::BOLD),
-    ));
-    for p in &parts {
-        spans.push(Span::styled(
-            format!("{p}/"),
-            Style::default().fg(th::TEXT),
-        ));
-    }
 
     let mut right: Vec<Span> = Vec::new();
     if !app.files.filter.is_empty() {
@@ -63,33 +56,34 @@ fn render_breadcrumb(f: &mut Frame, app: &App, area: Rect) {
         right.push(Tag::new("hidden off", Tone::Neutral).span());
         right.push(Span::raw(" "));
     }
-    let dirs = app.files.visible().iter().filter(|e| e.is_dir).count();
-    let files = app.files.visible().len() - dirs;
-    right.push(
-        Tag::new(format!("{dirs} dirs"), Tone::Info).span(),
-    );
-    right.push(Span::raw(" "));
-    right.push(Tag::new(format!("{files} files"), Tone::Neutral).span());
+    let visible = app.files.visible().len();
+    let total = app.files.entries.len();
+    right.push(Tag::new(format!("{visible}/{total}"), Tone::Neutral).span());
+    if !app.files.marked.is_empty() {
+        right.push(Span::raw(" "));
+        right.push(Tag::new(
+            format!("{} marked", app.files.marked.len()),
+            Tone::Warn,
+        ).span());
+    }
     right.push(Span::raw(" "));
 
     let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
     let right_w: usize = right.iter().map(|s| s.content.chars().count()).sum();
-    let pad = (area.width as usize).saturating_sub(used + right_w + 1);
+    let pad = (area.width as usize).saturating_sub(used + right_w);
     spans.push(Span::raw(" ".repeat(pad)));
     spans.extend(right);
 
-    let title = if app.files.load.loading {
-        format!("path {}", components::live_spinner())
+    if app.files.load.loading {
+        spans.push(Span::styled(
+            format!(" {}", components::live_spinner()),
+            Style::default().fg(th::ACCENT),
+        ));
     } else if app.files.load.error.is_some() {
-        "path — error".to_string()
-    } else {
-        "path".to_string()
-    };
+        spans.push(Span::styled(" !", Style::default().fg(th::ERROR)));
+    }
 
-    f.render_widget(
-        Paragraph::new(Line::from(spans)).block(components::panel_block(&title)),
-        area,
-    );
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_table(f: &mut Frame, app: &App, area: Rect) {
@@ -118,7 +112,8 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
     let visible = app.files.visible();
     let rows: Vec<Row> = visible
         .iter()
-        .map(|e| {
+        .enumerate()
+        .map(|(idx, e)| {
             let (glyph, name_style) = if e.is_dir {
                 (icons::DIR, Style::default().fg(th::DIR).add_modifier(Modifier::BOLD))
             } else {
@@ -128,7 +123,19 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
                 )
             };
 
+            let path = crate::app::join_path(&app.files.cwd, &e.name);
+            // A marked row keeps its `●` even while highlighted; only the
+            // unmarked selection uses the `▶` cursor.
+            let marker = if app.files.is_marked(&path) {
+                Span::styled("● ", Style::default().fg(th::WARN))
+            } else if idx == app.files.selected {
+                Span::styled("▶ ", Style::default().fg(th::ACCENT))
+            } else {
+                Span::raw("  ")
+            };
+
             let name_cell = Cell::from(Line::from(vec![
+                marker,
                 Span::styled(format!("{glyph} "), Style::default().fg(if e.is_dir {
                     th::DIR
                 } else {
@@ -200,7 +207,9 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
         .header(header)
         .block(components::panel_block(&title))
         .row_highlight_style(Style::default().bg(th::SELECTED_BG))
-        .highlight_symbol("▶ ")
+        // The cursor/mark glyph lives in the name cell so a marked row can
+        // show ● instead of ▶ without losing its highlight.
+        .highlight_symbol("")
         .column_spacing(1);
 
     f.render_stateful_widget(table, area, &mut state);
@@ -280,7 +289,7 @@ fn render_detail(f: &mut Frame, app: &App, area: Rect) {
                 ));
             }
             spans.push(Span::styled(
-                "   d describe",
+                "   x menu",
                 Style::default().fg(th::BORDER),
             ));
             Line::from(spans)
@@ -291,8 +300,7 @@ fn render_detail(f: &mut Frame, app: &App, area: Rect) {
         )),
     };
 
-    f.render_widget(
-        Paragraph::new(line).block(components::panel_block("selected")),
-        area,
-    );
+    // The selected-entry strip is a single information line, so it has no
+    // border and shares the visual language of the breadcrumb.
+    f.render_widget(Paragraph::new(line), area);
 }

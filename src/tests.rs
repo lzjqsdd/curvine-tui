@@ -656,7 +656,7 @@ fn delete_key_opens_confirmation_instead_of_deleting() {
     assert!(confirm.target.ends_with("events.parquet"));
     assert!(matches!(
         confirm.action,
-        crate::app::PendingAction::DeleteFile { recursive: false, .. }
+        crate::app::PendingAction::Delete { recursive: false, .. }
     ));
     assert_eq!(app.mode, crate::app::InputMode::Confirm);
 }
@@ -1143,6 +1143,160 @@ fn escape_closes_the_menu_without_acting() {
     assert!(app.menu.is_none());
     assert_eq!(app.mode, crate::app::InputMode::Normal);
     assert!(app.confirm.is_none(), "escape must not execute anything");
+}
+
+// ---------------------------------------------------------------- files: marks
+
+#[test]
+fn space_marks_and_unmarks_the_selected_entry() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 1;
+
+    press(&mut app, crossterm::event::KeyCode::Char(' '));
+    assert_eq!(app.files.marked, vec!["/data/events.parquet".to_string()]);
+    // Marking must not reset the cursor.
+    assert_eq!(app.files.selected, 1);
+
+    press(&mut app, crossterm::event::KeyCode::Char(' '));
+    assert!(app.files.marked.is_empty(), "second space must unmark");
+}
+
+#[test]
+fn a_marks_all_visible_and_u_clears_the_marks() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+
+    press(&mut app, crossterm::event::KeyCode::Char('a'));
+    assert_eq!(app.files.marked.len(), 2);
+    assert!(app.files.marked.contains(&"/data/warehouse".to_string()));
+    assert!(app.files.marked.contains(&"/data/events.parquet".to_string()));
+
+    press(&mut app, crossterm::event::KeyCode::Char('u'));
+    assert!(app.files.marked.is_empty());
+}
+
+#[test]
+fn navigation_keeps_marks_and_escape_clears_them() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 1;
+    press(&mut app, crossterm::event::KeyCode::Char(' '));
+    press(&mut app, crossterm::event::KeyCode::Up);
+    assert_eq!(app.files.marked.len(), 1, "navigation must not clear marks");
+
+    press(&mut app, crossterm::event::KeyCode::Esc);
+    assert!(app.files.marked.is_empty(), "escape must clear marks");
+}
+
+#[test]
+fn marked_rows_show_the_filled_marker_instead_of_the_cursor() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 1;
+    press(&mut app, crossterm::event::KeyCode::Char(' '));
+
+    let out = render_app(&app, 110, 20);
+    let icon = crate::ui::icons::for_file("events.parquet");
+    assert!(
+        out.contains(&format!("● {icon} events.parquet")),
+        "marked row lacks the ● marker:\n{out}"
+    );
+    assert!(
+        !out.contains(&format!("▶ {icon} events.parquet")),
+        "marked row must not also show the selection cursor"
+    );
+
+    // Unmarking restores the cursor on the selected row.
+    press(&mut app, crossterm::event::KeyCode::Char(' '));
+    let out = render_app(&app, 110, 20);
+    assert!(
+        out.contains(&format!("▶ {icon} events.parquet")),
+        "unmarked selection lost its cursor:\n{out}"
+    );
+}
+
+#[test]
+fn breadcrumb_reports_visible_total_and_marked_counts() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.filter = "events".to_string();
+    app.files.marked = vec!["/data/events.parquet".to_string()];
+
+    let out = render_app(&app, 110, 20);
+    let crumb = out.lines().nth(1).unwrap_or_default();
+    assert!(crumb.contains("/data"), "path missing: {crumb:?}");
+    assert!(crumb.contains("1/2"), "visible/total missing: {crumb:?}");
+    assert!(crumb.contains("1 marked"), "marked count missing: {crumb:?}");
+}
+
+#[test]
+fn batch_delete_confirmation_reports_the_mark_count() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.marked = vec![
+        "/data/events.parquet".to_string(),
+        "/data/warehouse".to_string(),
+    ];
+
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+    let labels: Vec<&str> = app
+        .menu
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .map(|i| i.label.as_str())
+        .collect();
+    assert!(
+        labels.contains(&"delete 2 marked items"),
+        "marked menu must advertise the batch: {labels:?}"
+    );
+
+    press(&mut app, crossterm::event::KeyCode::Delete);
+    let confirm = app.confirm.as_ref().expect("batch delete must confirm");
+    assert_eq!(confirm.target, "2 marked items");
+    match &confirm.action {
+        crate::app::PendingAction::Delete { paths, recursive } => {
+            assert_eq!(paths.len(), 2);
+            assert!(recursive, "a batch may contain directories");
+        }
+        other => panic!("unexpected action: {other:?}"),
+    }
+
+    let out = render_app(&app, 110, 28);
+    assert!(
+        out.contains("delete 2 marked items?"),
+        "confirmation must state the count:\n{out}"
+    );
+}
+
+#[test]
+fn batch_free_confirmation_reports_the_mark_count() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.marked = vec![
+        "/data/events.parquet".to_string(),
+        "/data/warehouse".to_string(),
+    ];
+
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+    press(&mut app, crossterm::event::KeyCode::Char('F'));
+    let confirm = app.confirm.as_ref().expect("batch free must confirm");
+    assert_eq!(confirm.target, "2 marked items");
+    assert!(matches!(
+        confirm.action,
+        crate::app::PendingAction::Free { .. }
+    ));
+    let out = render_app(&app, 110, 28);
+    assert!(out.contains("free 2 marked items?"), "count missing:\n{out}");
 }
 
 // ---------------------------------------------------------------- pure helpers
