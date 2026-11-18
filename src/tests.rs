@@ -45,6 +45,7 @@ fn test_app() -> App {
         tracked_jobs: Vec::new(),
         fsck: Loadable::default(),
         fsck_path: "/".to_string(),
+        fsck_selected: 0,
         fsck_cancel: new_cancel_flag(),
         bench: Loadable::default(),
         bench_opts: crate::rpc::bench::BenchOptions::default(),
@@ -1466,6 +1467,81 @@ fn batch_free_confirmation_reports_the_mark_count() {
     ));
     let out = render_app(&app, 110, 28);
     assert!(out.contains("free 2 marked items?"), "count missing:\n{out}");
+}
+
+// ---------------------------------------------------------------------- fsck
+
+#[test]
+fn fsck_summary_folds_every_counter_into_kv_rows() {
+    let out = render_panel(Panel::Fsck, 120, 32, true);
+    // The old middle "verdict" strip is gone; its counters live in summary.
+    assert!(!out.contains("verdict"), "verdict strip still present:\n{out}");
+    assert!(out.contains("120 files"), "file count missing");
+    assert!(out.contains("340 blocks"), "block count missing");
+    assert!(out.contains("640/680 available"), "replica summary missing");
+    assert!(out.contains("under-replicated"), "under-replicated row missing");
+    assert!(out.contains("scan errors"), "scan error row missing");
+    assert_eq!(
+        out.matches("under-replicated").count(),
+        1,
+        "the counter must not be duplicated in a strip"
+    );
+}
+
+#[test]
+fn fsck_selection_moves_and_stays_in_bounds() {
+    let mut app = test_app();
+    app.panel = Panel::Fsck;
+    populate_sample_data(&mut app);
+    assert_eq!(app.fsck_selected, 0);
+
+    press(&mut app, crossterm::event::KeyCode::Down);
+    assert_eq!(app.fsck_selected, 1);
+    press(&mut app, crossterm::event::KeyCode::Down);
+    assert_eq!(app.fsck_selected, 1, "selection must not run past the rows");
+    press(&mut app, crossterm::event::KeyCode::Up);
+    assert_eq!(app.fsck_selected, 0);
+    press(&mut app, crossterm::event::KeyCode::Up);
+    assert_eq!(app.fsck_selected, 0, "selection must not underflow");
+}
+
+#[test]
+fn fsck_enter_opens_the_selected_bad_file_detail() {
+    let mut app = test_app();
+    app.panel = Panel::Fsck;
+    populate_sample_data(&mut app);
+    app.fsck_selected = 1; // /data/events.parquet
+
+    press(&mut app, crossterm::event::KeyCode::Enter);
+    let view = app.detail.as_ref().expect("enter must open file detail");
+    assert_eq!(app.mode, crate::app::InputMode::Detail);
+    assert_eq!(view.kind, crate::app::DetailKind::File);
+    assert_eq!(view.subject, "/data/events.parquet");
+    let rows: Vec<&str> = view.rows.iter().map(|(k, _)| k.as_str()).collect();
+    for expected in ["path", "size", "blocks", "replicas"] {
+        assert!(rows.contains(&expected), "missing {expected}: {rows:?}");
+    }
+    let replicas = view.rows.iter().find(|(k, _)| k == "replicas").unwrap();
+    assert!(replicas.1.contains("1 of 3"), "replica detail wrong: {}", replicas.1);
+
+    press(&mut app, crossterm::event::KeyCode::Esc);
+    assert!(app.detail.is_none());
+}
+
+#[test]
+fn fsck_enter_scans_when_there_are_no_unhealthy_files() {
+    let mut app = test_app();
+    app.panel = Panel::Fsck;
+    populate_sample_data(&mut app);
+    if let Some(s) = app.fsck.data.as_mut() {
+        s.bad_files.clear();
+    }
+    // Enter falls through to a scan when there is nothing to inspect. The
+    // scan itself runs asynchronously; the loading flag is the observable
+    // effect that proves the key reached start_fsck.
+    press(&mut app, crossterm::event::KeyCode::Enter);
+    assert!(app.fsck.loading, "enter should start a scan: {}", app.status);
+    assert!(app.detail.is_none());
 }
 
 // ------------------------------------------------------------ command line

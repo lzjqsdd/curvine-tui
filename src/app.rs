@@ -520,6 +520,7 @@ pub struct App {
 
     pub fsck: Loadable<FsckSnapshot>,
     pub fsck_path: String,
+    pub fsck_selected: usize,
     pub fsck_cancel: CancelFlag,
     pub bench: Loadable<BenchSnapshot>,
     pub bench_opts: crate::rpc::bench::BenchOptions,
@@ -581,6 +582,7 @@ impl App {
             tracked_jobs: Vec::new(),
             fsck: Loadable::default(),
             fsck_path: "/".to_string(),
+            fsck_selected: 0,
             fsck_cancel: new_cancel_flag(),
             bench: Loadable::default(),
             bench_opts: crate::rpc::bench::BenchOptions::default(),
@@ -1143,6 +1145,11 @@ impl App {
                     );
                     let warn = s.warnings;
                     self.fsck.ok(s);
+                    if let Some(d) = self.fsck.data.as_ref() {
+                        if self.fsck_selected >= d.bad_files.len() {
+                            self.fsck_selected = d.bad_files.len().saturating_sub(1);
+                        }
+                    }
                     self.set_status(msg, warn);
                 }
                 Err(e) => {
@@ -1838,8 +1845,31 @@ impl App {
     }
 
     fn on_fsck_key(&mut self, key: KeyEvent) {
+        let n = self
+            .fsck
+            .data
+            .as_ref()
+            .map(|s| s.bad_files.len())
+            .unwrap_or(0);
         match key.code {
-            KeyCode::Enter | KeyCode::Char('s') => self.start_fsck(),
+            KeyCode::Down | KeyCode::Char('j') => {
+                if n > 0 {
+                    self.fsck_selected = (self.fsck_selected + 1).min(n - 1);
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.fsck_selected = self.fsck_selected.saturating_sub(1);
+            }
+            // Enter inspects the highlighted bad file; with no unhealthy rows
+            // there is nothing to drill into, so it starts the scan instead.
+            KeyCode::Enter => {
+                if n > 0 {
+                    self.fsck_open_selected();
+                } else {
+                    self.start_fsck();
+                }
+            }
+            KeyCode::Char('s') => self.start_fsck(),
             KeyCode::Char('f') => {
                 // Scan the directory currently open in the file browser.
                 self.fsck_path = self.files.cwd.clone();
@@ -1847,6 +1877,90 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Open the full-screen detail for the highlighted unhealthy file.
+    fn fsck_open_selected(&mut self) {
+        let Some(row) = self
+            .fsck
+            .data
+            .as_ref()
+            .and_then(|s| s.bad_files.get(self.fsck_selected))
+            .cloned()
+        else {
+            return;
+        };
+        let mut rows = vec![
+            ("path".into(), row.path.clone()),
+            (
+                "size".into(),
+                if row.len > 0 {
+                    format!("{} ({} bytes)", crate::ui::human_bytes(row.len), row.len)
+                } else {
+                    "—".to_string()
+                },
+            ),
+            (
+                "blocks".into(),
+                if row.blocks > 0 { row.blocks.to_string() } else { "—".to_string() },
+            ),
+            (
+                "replicas".into(),
+                if row.expected > 0 {
+                    format!("{} of {} available", row.available, row.expected)
+                } else {
+                    "n/a".to_string()
+                },
+            ),
+        ];
+        if let Some(err) = &row.error {
+            rows.push(("issue".into(), err.clone()));
+        }
+        self.open_block_detail("fsck", row.path.clone(), rows);
+    }
+
+    /// Build a file detail view and fetch its block locations. Shared by the
+    /// Files panel and the Fsck drill-down.
+    fn open_block_detail(&mut self, title: &str, path: String, rows: Vec<(String, String)>) {
+        self.detail = Some(DetailView {
+            title: format!("{title} {path}"),
+            subject: path.clone(),
+            kind: DetailKind::File,
+            headline: Some(("file".to_string(), path.clone())),
+            rows,
+            blocks: Vec::new(),
+            worker_blocks: Vec::new(),
+            storage: Vec::new(),
+            loading: true,
+            error: None,
+        });
+        self.mode = InputMode::Detail;
+
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        self.spawn_call(async move {
+            let res = client
+                .file_blocks(&path)
+                .await
+                .map(|blocks| {
+                    let mut rows = Vec::new();
+                    for b in blocks {
+                        for r in &b.replicas {
+                            rows.push(crate::event::BlockRow {
+                                block_id: format!("{}", b.block_id),
+                                offset: b.offset,
+                                len: b.len,
+                                worker: r.address.clone(),
+                                available: r.available,
+                                state: r.state.clone(),
+                            });
+                        }
+                    }
+                    rows
+                })
+                .map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::TaskDone(TaskResult::Describe { path, blocks: res }));
+        });
     }
 
     fn on_bench_key(&mut self, key: KeyEvent) {
@@ -2290,50 +2404,7 @@ impl App {
 
         let mut rows = base_rows;
         rows.push(("blocks".into(), "loading…".to_string()));
-        self.detail = Some(DetailView {
-            title: format!("file {}", entry.name),
-            subject: path.clone(),
-            kind: DetailKind::File,
-            headline: Some(("file".to_string(), path.clone())),
-            rows,
-            blocks: Vec::new(),
-            worker_blocks: Vec::new(),
-            storage: Vec::new(),
-            loading: true,
-            error: None,
-        });
-        self.mode = InputMode::Detail;
-
-        let client = self.client.clone();
-        let tx = self.tx.clone();
-        let describe_path = path.clone();
-        self.spawn_call(async move {
-            let res = client
-                .file_blocks(&describe_path)
-                .await
-                .map(|blocks| {
-                    // Flatten to one row per replica; the UI aggregates.
-                    let mut rows = Vec::new();
-                    for b in blocks {
-                        for r in &b.replicas {
-                            rows.push(crate::event::BlockRow {
-                                block_id: format!("{}", b.block_id),
-                                offset: b.offset,
-                                len: b.len,
-                                worker: r.address.clone(),
-                                available: r.available,
-                                state: r.state.clone(),
-                            });
-                        }
-                    }
-                    rows
-                })
-                .map_err(|e| e.to_string());
-            let _ = tx.send(AppEvent::TaskDone(TaskResult::Describe {
-                path: describe_path,
-                blocks: res,
-            }));
-        });
+        self.open_block_detail(&format!("file {}", entry.name), path, rows);
     }
 
     fn spawn_op<F>(&mut self, label: &str, fut: F)

@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Cell, Paragraph, Row, Table},
+    widgets::{Cell, Paragraph, Row, Table, TableState},
     Frame,
 };
 
@@ -19,16 +19,14 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // verdict gauge
-            Constraint::Length(3), // stat badge strip
-            Constraint::Length(7), // numeric summary
+            Constraint::Length(10), // numeric summary, one kv row per counter
             Constraint::Min(3),    // unhealthy files
         ])
         .split(area);
 
     render_verdict(f, app, rows[0]);
-    render_strip(f, app, rows[1]);
-    render_summary(f, app, rows[2]);
-    render_bad_files(f, app, rows[3]);
+    render_summary(f, app, rows[1]);
+    render_bad_files(f, app, rows[2]);
 }
 
 fn render_verdict(f: &mut Frame, app: &App, area: Rect) {
@@ -93,12 +91,11 @@ fn render_verdict(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn render_strip(f: &mut Frame, app: &App, area: Rect) {
-    let mut spans = vec![Span::raw(" ")];
+fn render_summary(f: &mut Frame, app: &App, area: Rect) {
+    let mut lines: Vec<Line> = Vec::new();
 
     match &app.fsck.data {
         Some(s) => {
-            // The dot colour is the verdict; the label only names the counter.
             let replica_tone = if s.expected_replicas == 0 {
                 Tone::Neutral
             } else if s.available_replicas == s.expected_replicas {
@@ -108,86 +105,62 @@ fn render_strip(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Tone::Warn
             };
-            let counter = |tone: Tone, text: String| -> Vec<Span<'static>> {
-                vec![
-                    components::dot(tone),
-                    Span::raw(" "),
-                    Span::styled(text, Style::default().fg(th::TEXT)),
-                    Span::raw("   "),
-                ]
-            };
-            spans.extend(counter(Tone::Info, format!("{} files", s.file_count)));
-            spans.extend(counter(Tone::Neutral, format!("{} blocks", s.block_count)));
-            spans.extend(counter(
-                replica_tone,
-                format!("{}/{} replicas", s.available_replicas, s.expected_replicas),
+            lines.push(kv_line("scanned", s.root.clone(), Tone::Info, 18));
+            lines.push(kv_line(
+                "files",
+                format!("{} files", s.file_count),
+                Tone::Info,
+                18,
             ));
-            spans.extend(counter(
+            lines.push(kv_line(
+                "blocks",
+                format!("{} blocks", s.block_count),
+                Tone::Neutral,
+                18,
+            ));
+            lines.push(kv_line(
+                "replicas",
+                format!(
+                    "{}/{} available ({} recorded)",
+                    s.available_replicas, s.expected_replicas, s.recorded_replicas
+                ),
+                replica_tone,
+                18,
+            ));
+            lines.push(kv_line(
+                "under-replicated",
+                format!("{} blocks", s.under_replicated_blocks),
                 if s.under_replicated_blocks == 0 {
                     Tone::Ok
                 } else {
                     Tone::Warn
                 },
-                format!("{} under-replicated", s.under_replicated_blocks),
+                18,
             ));
-            spans.extend(counter(
+            lines.push(kv_line(
+                "empty",
+                format!("{} blocks", s.missing_replica_blocks),
                 if s.missing_replica_blocks == 0 {
                     Tone::Neutral
                 } else {
                     Tone::Error
                 },
-                format!("{} empty", s.missing_replica_blocks),
+                18,
             ));
-            spans.extend(counter(
+            lines.push(kv_line(
+                "errors",
+                format!("{} scan errors", s.errors.len()),
                 if s.errors.is_empty() {
                     Tone::Neutral
                 } else {
                     Tone::Error
                 },
-                format!("{} errors", s.errors.len()),
-            ));
-        }
-        None => spans.push(Span::styled(
-            " no report yet",
-            Style::default().fg(th::MUTED),
-        )),
-    }
-
-    f.render_widget(
-        Paragraph::new(Line::from(spans)).block(components::panel_block("verdict")),
-        area,
-    );
-}
-
-fn render_summary(f: &mut Frame, app: &App, area: Rect) {
-    let mut lines: Vec<Line> = Vec::new();
-
-    match &app.fsck.data {
-        Some(s) => {
-            lines.push(kv_line("scanned", s.root.clone(), Tone::Info, 20));
-            lines.push(kv_line(
-                "replicas recorded",
-                format!("{} (expected {})", s.recorded_replicas, s.expected_replicas),
-                Tone::Neutral,
-                20,
-            ));
-            lines.push(kv_line(
-                "replicas available",
-                format!(
-                    "{} ({} unavailable)",
-                    s.available_replicas, s.unavailable_replicas
-                ),
-                if s.unavailable_replicas == 0 {
-                    Tone::Ok
-                } else {
-                    Tone::Warn
-                },
-                20,
+                18,
             ));
             let r = s.health_ratio;
             lines.push(Line::from(vec![
                 Span::styled(
-                    format!("  {:<20}", "health"),
+                    format!("  {:<18}", "health"),
                     Style::default().fg(th::MUTED),
                 ),
                 Span::styled(
@@ -266,6 +239,11 @@ fn render_bad_files(f: &mut Frame, app: &App, area: Rect) {
         None => (Vec::new(), "unhealthy files".to_string(), Tone::Neutral),
     };
 
+    let mut state = TableState::default();
+    if !rows.is_empty() {
+        state.select(Some(app.fsck_selected.min(rows.len() - 1)));
+    }
+
     let table = Table::new(
         rows,
         [
@@ -288,7 +266,13 @@ fn render_bad_files(f: &mut Frame, app: &App, area: Rect) {
             tone,
         ),
     ))
+    .row_highlight_style(
+        Style::default()
+            .bg(th::SELECTED_BG)
+            .add_modifier(Modifier::BOLD),
+    )
+    .highlight_symbol("▶ ")
     .column_spacing(1);
 
-    f.render_widget(table, area);
+    f.render_stateful_widget(table, area, &mut state);
 }
