@@ -1018,6 +1018,133 @@ fn buffer_text(term: &Terminal<TestBackend>) -> String {
     out
 }
 
+// ------------------------------------------------------------- action menu
+
+fn press(app: &mut App, code: crossterm::event::KeyCode) {
+    app.on_event(crate::event::AppEvent::Key(crossterm::event::KeyEvent::new(
+        code,
+        crossterm::event::KeyModifiers::NONE,
+    )));
+}
+
+fn open_menu_for(app: &mut App, panel: Panel) {
+    app.panel = panel;
+    populate_sample_data(app);
+    // Files has a directory at row 0 and a file at row 1; the file menu is the
+    // richer one, so select it for the general per-panel check.
+    if panel == Panel::Files {
+        app.files.selected = 1;
+    }
+    press(app, crossterm::event::KeyCode::Char('x'));
+    assert_eq!(app.mode, crate::app::InputMode::Menu, "x must open a menu");
+    assert!(app.menu.is_some(), "menu state missing for {panel:?}");
+    assert!(
+        !app.menu.as_ref().unwrap().items.is_empty(),
+        "menu for {panel:?} has no actions"
+    );
+}
+
+#[test]
+fn x_opens_a_context_menu_on_every_panel() {
+    for panel in Panel::ALL {
+        let mut app = test_app();
+        open_menu_for(&mut app, panel);
+    }
+}
+
+#[test]
+fn file_menu_matches_the_selection_kind() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+
+    app.files.selected = 0; // warehouse/ (directory)
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+    let labels: Vec<&str> = app
+        .menu
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .map(|i| i.label.as_str())
+        .collect();
+    assert!(labels.contains(&"enter directory"), "dir menu: {labels:?}");
+    assert!(labels.contains(&"delete recursively"), "dir menu: {labels:?}");
+
+    press(&mut app, crossterm::event::KeyCode::Esc);
+    app.files.selected = 1; // events.parquet (file)
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+    let labels: Vec<&str> = app
+        .menu
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .map(|i| i.label.as_str())
+        .collect();
+    for expected in ["detail", "delete", "free cached blocks", "upload", "refresh"] {
+        assert!(labels.contains(&expected), "file menu missing {expected}: {labels:?}");
+    }
+}
+
+#[test]
+fn menu_direct_key_executes_and_closes() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 1;
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+    assert_eq!(app.mode, crate::app::InputMode::Menu);
+
+    // Del is bound to delete in the file menu; pressing it directly runs the
+    // action without needing j/k + Enter.
+    press(&mut app, crossterm::event::KeyCode::Delete);
+    assert!(app.menu.is_none(), "direct execution must close the menu");
+    assert_eq!(app.mode, crate::app::InputMode::Confirm);
+    assert!(app.confirm.is_some(), "delete confirmation missing");
+}
+
+#[test]
+fn menu_navigation_and_enter_run_the_selected_item() {
+    let mut app = test_app();
+    app.panel = Panel::Bench;
+    populate_sample_data(&mut app);
+    let before = app.bench_opts.profile;
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+    // Items are b(run), p(profile), t(threads), d(duration): move to profile.
+    press(&mut app, crossterm::event::KeyCode::Down);
+    press(&mut app, crossterm::event::KeyCode::Enter);
+    assert_ne!(before, app.bench_opts.profile, "profile toggle did not run");
+    assert!(app.menu.is_none());
+}
+
+#[test]
+fn menu_renders_keys_title_and_labels() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 1;
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+    let out = render_app(&app, 110, 28);
+    assert!(out.contains("events.parquet"), "menu title missing:\n{out}");
+    assert!(out.contains("detail"), "menu label missing");
+    assert!(out.contains("delete"), "menu label missing");
+    assert!(out.contains("Del"), "delete key label missing");
+}
+
+#[test]
+fn escape_closes_the_menu_without_acting() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 1;
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+    press(&mut app, crossterm::event::KeyCode::Esc);
+    assert!(app.menu.is_none());
+    assert_eq!(app.mode, crate::app::InputMode::Normal);
+    assert!(app.confirm.is_none(), "escape must not execute anything");
+}
+
 // ---------------------------------------------------------------- pure helpers
 
 #[test]

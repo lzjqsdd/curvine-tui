@@ -1287,7 +1287,12 @@ impl App {
                     .data
                     .as_ref()
                     .and_then(|l| l.get(self.job_selected))
-                    .map(|j| !j.state.to_ascii_lowercase().contains("complete"))
+                    .map(|j| {
+                        let state = j.state.to_ascii_lowercase();
+                        ["run", "progress", "queue", "pending"]
+                            .iter()
+                            .any(|k| state.contains(k))
+                    })
                     .unwrap_or(false);
                 if running {
                     items.push(item('c', "cancel job", JobCancel));
