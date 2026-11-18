@@ -237,6 +237,34 @@ curvine-tui --get /remote/file.bin /local/file.bin   # streaming download
 
 `--probe` exits non-zero if any check fails, so it works as a health check.
 
+## Testing
+
+```bash
+cargo test                  # hermetic: render, reducer and helper tests
+cargo clippy --all-targets  # must stay warning-free
+```
+
+The live tests are skipped unless `CURVINE_TUI_LIVE=1`, and they seed their own
+fixtures, so they can run against any disposable cluster:
+
+```bash
+# 1. build and start a local cluster (one master, one worker)
+(cd /path/to/curvine && ./build/build.sh -p core -d && ./build/dist/bin/local-cluster.sh start)
+
+# 2. run everything, serialized so tests do not share fixtures
+CURVINE_TUI_LIVE=1 cargo test -- --test-threads=1
+```
+
+They expect the cluster at `localhost:8995` and `cv` on `PATH` for the two
+fixtures that need a CLI-side mount resync / cache fill (`CURVINE_TUI_CV`
+overrides the binary); without `cv` those two tests skip themselves. Everything
+else is created through the client and removed afterwards.
+
+The live suite drives the real reducer, not just the RPC layer: header and
+cluster context, browsing, multi-select and batch delete, the `x` menu on every
+panel, file and worker detail, command completion and history, mount → cache →
+free → unmount, `load` jobs, fsck and bench.
+
 ## Version coupling
 
 The TUI links curvine's protobuf bindings, so **the client and the cluster must

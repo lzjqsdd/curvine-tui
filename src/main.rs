@@ -8,6 +8,8 @@ mod config;
 mod event;
 pub mod rpc;
 #[cfg(test)]
+mod live_tests;
+#[cfg(test)]
 mod tests;
 mod transfer;
 mod ui;

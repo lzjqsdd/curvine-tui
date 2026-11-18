@@ -47,6 +47,22 @@ impl ClusterClient {
         self.rt.clone()
     }
 
+    /// Build a client with its own mount cache but sharing this runtime.
+    /// Used by the live test harness: every test needs a fresh view of the
+    /// mount table, while dropping a runtime between tests panics on shutdown.
+    #[cfg(test)]
+    pub fn fresh(&self, cfg: &AppConfig) -> Result<Self> {
+        let fs = UnifiedFileSystem::with_rt(cfg.cluster.clone(), self.rt.clone())
+            .map_err(AppError::from_fs)?;
+        let fs = Arc::new(fs);
+        let job = Arc::new(JobMasterClient::new(fs.fs_client()));
+        Ok(Self {
+            fs,
+            job,
+            rt: self.rt.clone(),
+        })
+    }
+
     /// Escape hatch for callers that need the raw filesystem (option builders,
     /// config). Kept narrow on purpose.
     pub fn inner(&self) -> &UnifiedFileSystem {
