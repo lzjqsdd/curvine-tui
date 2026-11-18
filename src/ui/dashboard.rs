@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Cell, Paragraph, Row, Table},
+    widgets::{Cell, Paragraph, Row, Table, TableState},
     Frame,
 };
 
@@ -29,7 +29,9 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_cluster(f: &mut Frame, app: &App, area: Rect) {
-    let mut lines: Vec<Line> = vec![Line::from("")];
+    // No leading blank: the first row is the capacity bar so the column stays
+    // information-dense on short terminals.
+    let mut lines: Vec<Line> = Vec::new();
 
     match (&app.cluster.data, app.cluster.loading) {
         (Some(c), _) => {
@@ -77,7 +79,6 @@ fn render_cluster(f: &mut Frame, app: &App, area: Rect) {
                 ]));
             }
 
-            lines.push(Line::from(""));
             lines.push(section("namespace"));
             // Counters animate from their previous value; the label prints the
             // rounded spring, so a refresh counts up instead of snapping.
@@ -100,7 +101,6 @@ fn render_cluster(f: &mut Frame, app: &App, area: Rect) {
                 Tone::Neutral,
             ));
 
-            lines.push(Line::from(""));
             lines.push(section("members"));
             let master_tone = Tone::Ok;
             lines.push(Line::from(vec![
@@ -183,12 +183,8 @@ fn render_cluster(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    let title = match &app.cluster.data {
-        Some(_) => "cluster",
-        None => "cluster",
-    };
     f.render_widget(
-        Paragraph::new(lines).block(components::panel_block(title)),
+        Paragraph::new(lines).block(components::panel_block("cluster")),
         area,
     );
 }
@@ -271,13 +267,24 @@ fn render_workers(f: &mut Frame, app: &App, area: Rect) {
         None => "workers".to_string(),
     };
 
+    let mut state = TableState::default();
+    if !rows.is_empty() {
+        state.select(Some(app.node_selected.min(rows.len() - 1)));
+    }
+
     let table = Table::new(rows, widths)
         .header(header)
         .block(components::panel_block_badged(
             &title,
             Tag::new("disk %, not CPU", Tone::Neutral),
         ))
+        .row_highlight_style(
+            Style::default()
+                .bg(th::SELECTED_BG)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ")
         .column_spacing(1);
 
-    f.render_widget(table, area);
+    f.render_stateful_widget(table, area, &mut state);
 }

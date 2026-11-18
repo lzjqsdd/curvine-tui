@@ -1020,7 +1020,14 @@ impl App {
                 }
             }
             TaskResult::ClusterInfo(res) => match *res {
-                Ok(s) => self.cluster.ok(s),
+                Ok(s) => {
+                    self.cluster.ok(s);
+                    if let Some(c) = self.cluster.data.as_ref() {
+                        if self.node_selected >= c.workers.len() {
+                            self.node_selected = c.workers.len().saturating_sub(1);
+                        }
+                    }
+                }
                 Err(e) => {
                     self.cluster.fail(e.clone());
                     self.set_status(format!("cluster info: {e}"), true);

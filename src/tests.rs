@@ -1469,6 +1469,65 @@ fn batch_free_confirmation_reports_the_mark_count() {
     assert!(out.contains("free 2 marked items?"), "count missing:\n{out}");
 }
 
+// ----------------------------------------------------------------- dashboard
+
+fn add_second_worker(app: &mut App) {
+    let c = app.cluster.data.as_mut().expect("cluster data");
+    let mut w = c.workers[0].clone();
+    w.address = "127.0.0.2:8997".into();
+    w.ip = "127.0.0.2".into();
+    w.worker_id = 2;
+    w.block_num = 128;
+    c.workers.push(w);
+}
+
+#[test]
+fn dashboard_workers_use_the_same_selection_as_nodes() {
+    let mut app = test_app();
+    app.panel = Panel::Dashboard;
+    populate_sample_data(&mut app);
+    add_second_worker(&mut app);
+    app.retarget_animations();
+
+    press(&mut app, crossterm::event::KeyCode::Down);
+    assert_eq!(app.node_selected, 1);
+    press(&mut app, crossterm::event::KeyCode::Down);
+    assert_eq!(app.node_selected, 1, "selection must stop at the last worker");
+    press(&mut app, crossterm::event::KeyCode::Up);
+    assert_eq!(app.node_selected, 0);
+
+    let out = render_app(&app, 120, 30);
+    let selected_row = out
+        .lines()
+        .find(|l| l.contains("127.0.0.1:8997"))
+        .unwrap_or_default();
+    assert!(
+        selected_row.contains('▶'),
+        "selected worker row lacks its cursor: {selected_row:?}"
+    );
+    let other_row = out
+        .lines()
+        .find(|l| l.contains("127.0.0.2:8997"))
+        .unwrap_or_default();
+    assert!(!other_row.contains('▶'), "only one row may be selected");
+}
+
+#[test]
+fn dashboard_d_opens_worker_detail() {
+    let mut app = test_app();
+    app.panel = Panel::Dashboard;
+    populate_sample_data(&mut app);
+    add_second_worker(&mut app);
+    app.retarget_animations();
+    press(&mut app, crossterm::event::KeyCode::Down);
+
+    press(&mut app, crossterm::event::KeyCode::Char('d'));
+    let view = app.detail.as_ref().expect("dashboard d must open worker detail");
+    assert_eq!(view.kind, crate::app::DetailKind::Worker);
+    assert_eq!(view.subject, "127.0.0.2:8997");
+    assert_eq!(app.mode, crate::app::InputMode::Detail);
+}
+
 // ---------------------------------------------------------------------- fsck
 
 #[test]
