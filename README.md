@@ -27,7 +27,10 @@ client and server must be the same version.
 | Command line | all of the above | ✅ `:` prompt, completion and history |
 
 Not yet wired: `cat` viewer, `export`, `transfer` submission, `chmod`/`chown`,
-`du`/`count`, `bench prefill`, `mount --check-path-consist` and resync.
+`du`/`count`, `bench prefill`, `mount --check-path-consist` and resync. resync
+lives in `curvine-cli` and walks the UFS tree, so a first fs-mode mount made from
+the TUI shows the mount but not pre-existing UFS files until `cv mount resync`
+runs; mount the path with `cv mount` when that import matters.
 
 ### Mounts
 
