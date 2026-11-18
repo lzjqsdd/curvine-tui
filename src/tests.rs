@@ -1469,6 +1469,99 @@ fn batch_free_confirmation_reports_the_mark_count() {
     assert!(out.contains("free 2 marked items?"), "count missing:\n{out}");
 }
 
+// ------------------------------------------------------- menu execution paths
+
+#[test]
+fn menu_cancel_item_cancels_the_selected_transfer() {
+    let mut app = test_app();
+    app.panel = Panel::Transfers;
+    populate_sample_data(&mut app);
+    app.transfer_selected = 0;
+    let flag = app.transfers[0].cancel.clone();
+
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+    // The transfer menu binds x to "cancel selected".
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+    assert!(
+        flag.load(std::sync::atomic::Ordering::Relaxed),
+        "menu cancel did not set the cancellation flag"
+    );
+    assert_eq!(app.transfers[0].state, TransferState::Cancelled);
+}
+
+#[test]
+fn menu_unmount_item_opens_the_confirmation() {
+    let mut app = test_app();
+    app.panel = Panel::Mounts;
+    populate_sample_data(&mut app);
+    app.mount_selected = 0;
+
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+    press(&mut app, crossterm::event::KeyCode::Char('u'));
+    let confirm = app.confirm.as_ref().expect("unmount menu must confirm");
+    assert!(matches!(
+        confirm.action,
+        crate::app::PendingAction::Umount { .. }
+    ));
+    assert_eq!(app.mode, crate::app::InputMode::Confirm);
+}
+
+#[test]
+fn menu_abort_item_cancels_a_running_scan() {
+    let mut app = test_app();
+    app.panel = Panel::Fsck;
+    populate_sample_data(&mut app);
+    app.fsck.begin();
+
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+    assert!(
+        app.fsck_cancel.load(std::sync::atomic::Ordering::Relaxed),
+        "menu abort did not request cancellation"
+    );
+}
+
+#[test]
+fn recursive_delete_menu_item_accepts_the_d_alias() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 0; // directory
+
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+    // The directory menu advertises Del/D for recursive delete.
+    press(&mut app, crossterm::event::KeyCode::Char('D'));
+    let confirm = app.confirm.as_ref().expect("D must run recursive delete");
+    assert!(matches!(
+        confirm.action,
+        crate::app::PendingAction::Delete { recursive: true, .. }
+    ));
+}
+
+#[test]
+fn jobs_selection_and_menu_offer_cancellation_for_running_jobs() {
+    let mut app = test_app();
+    app.panel = Panel::Jobs;
+    populate_sample_data(&mut app);
+    if let Some(j) = app.jobs.data.as_mut().and_then(|l| l.first_mut()) {
+        j.state = "Running".into();
+    }
+    app.retarget_animations();
+
+    press(&mut app, crossterm::event::KeyCode::Down);
+    assert_eq!(app.job_selected, 0, "one job: down stays on it");
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+    let labels: Vec<&str> = app
+        .menu
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .map(|i| i.label.as_str())
+        .collect();
+    assert!(labels.contains(&"cancel job"), "running job menu: {labels:?}");
+}
+
 // ----------------------------------------------------------------- dashboard
 
 fn add_second_worker(app: &mut App) {
@@ -1539,7 +1632,7 @@ fn fsck_summary_folds_every_counter_into_kv_rows() {
     assert!(out.contains("340 blocks"), "block count missing");
     assert!(out.contains("640/680 available"), "replica summary missing");
     assert!(out.contains("under-replicated"), "under-replicated row missing");
-    assert!(out.contains("scan errors"), "scan error row missing");
+    assert!(out.contains("scan error"), "scan error row missing");
     assert_eq!(
         out.matches("under-replicated").count(),
         1,
@@ -1690,6 +1783,46 @@ fn escape_leaves_the_command_prompt_without_history_noise() {
     assert_eq!(app.mode, crate::app::InputMode::Normal);
     assert!(app.command.is_empty());
     assert!(app.command_history.is_empty());
+}
+
+#[test]
+fn footer_keeps_context_hints_at_narrow_widths() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    let out = render_app(&app, 60, 24);
+    let footer = out.lines().last().unwrap_or_default();
+    assert!(
+        footer.contains("x menu") || footer.contains("space mark"),
+        "context hints dropped at 60 columns: {footer:?}"
+    );
+}
+
+#[test]
+fn help_documents_the_menu_and_marking() {
+    let mut app = test_app();
+    app.help_visible = true;
+    let out = render_app(&app, 110, 48);
+    assert!(out.contains("contextual action menu"), "menu help missing:\n{out}");
+    assert!(out.contains("mark entry"), "mark help missing");
+    assert!(out.contains("full-screen detail"), "detail help missing");
+    assert!(out.contains("history"), "command history help missing");
+}
+
+#[test]
+fn menu_and_detail_survive_pathological_sizes() {
+    for (w, h) in [(20u16, 8u16), (1, 1), (10, 3), (300, 5)] {
+        let mut app = test_app();
+        app.panel = Panel::Files;
+        populate_sample_data(&mut app);
+        app.files.selected = 1;
+        press(&mut app, crossterm::event::KeyCode::Char('x'));
+        render_app(&app, w, h);
+
+        press(&mut app, crossterm::event::KeyCode::Esc);
+        press(&mut app, crossterm::event::KeyCode::Char('d'));
+        render_app(&app, w, h);
+    }
 }
 
 // ---------------------------------------------------------------- pure helpers

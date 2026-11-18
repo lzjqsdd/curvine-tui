@@ -90,7 +90,7 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         ),
         Span::styled("  ·  ", Style::default().fg(th::BORDER)),
         Span::styled(
-            app.panel.title(),
+            format!(" {} {}", app.panel.icon(), app.panel.title()),
             Style::default()
                 .fg(th::ACCENT)
                 .add_modifier(Modifier::BOLD),
@@ -134,7 +134,7 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         ),
         Span::styled("   ·   ", Style::default().fg(th::BORDER)),
         Span::styled(
-            format!("↻ {}s", app.refresh_countdown_secs()),
+            format!("↻{}s", app.refresh_countdown_secs()),
             Style::default().fg(th::MUTED),
         ),
     ];
@@ -160,11 +160,22 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
     let inner = area.width as usize;
 
     let mut line: Vec<Span> = left;
-    if inner >= left_w + 2 + full_w + 2 + right_w {
+    // Keep at least two cells between the cluster line and the shortcut hint;
+    // without an explicit gap the timer visually merges into "1-8".
+    let gap = 2usize;
+    if inner >= left_w + full_w + right_w + gap {
         line.push(Span::raw(" ".repeat(
-            inner - left_w - full_w - right_w,
+            inner - left_w - full_w - right_w - gap,
         )));
         line.extend(full_middle);
+        line.push(Span::raw("  "));
+        line.extend(right);
+    } else if inner >= left_w + compact_w + right_w + gap {
+        line.push(Span::raw(" ".repeat(
+            inner - left_w - compact_w - right_w - gap,
+        )));
+        line.extend(compact_middle);
+        line.push(Span::raw("  "));
         line.extend(right);
     } else if inner >= left_w + 2 + compact_w {
         line.push(Span::raw("  "));
@@ -234,16 +245,18 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
     let show_right = right_w < width;
     let mut line = Vec::new();
 
-    if show_right {
+    if !show_right {
+        // At very narrow widths the contextual keys are still more useful
+        // than a status line, so clip the hints instead of dropping them.
+        let text: String = hints.chars().take(width).collect();
+        line.push(Span::styled(text, Style::default().fg(th::MUTED)));
+    } else {
         let available = width.saturating_sub(right_w + 1);
         let text: String = left_text.chars().take(available).collect();
         line.push(Span::styled(text, left_style));
         let used = line.iter().map(|s: &Span| s.content.chars().count()).sum::<usize>();
         line.push(Span::raw(" ".repeat(width.saturating_sub(used + right_w))));
         line.push(Span::styled(hints, Style::default().fg(th::MUTED)));
-    } else {
-        let text: String = left_text.chars().take(width).collect();
-        line.push(Span::styled(text, left_style));
     }
 
     f.render_widget(Paragraph::new(Line::from(line)), area);

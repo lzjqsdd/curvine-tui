@@ -21,6 +21,8 @@ pub const KEY_DELETE: char = '\u{7f}';
 pub struct MenuItem {
     /// The key that executes this item directly while the menu is open.
     pub key: char,
+    /// Optional second binding, e.g. `D` alongside `Del`.
+    pub alt_key: Option<char>,
     pub label: String,
     pub action: MenuAction,
 }
@@ -85,7 +87,9 @@ impl Menu {
 
     /// Find the item bound to a key, for direct execution.
     pub fn item_for_key(&self, key: char) -> Option<&MenuItem> {
-        self.items.iter().find(|i| i.key == key)
+        self.items
+            .iter()
+            .find(|i| i.key == key || i.alt_key == Some(key))
     }
 }
 
@@ -98,12 +102,19 @@ pub fn key_label(key: char) -> String {
     }
 }
 
+fn item_key_label(item: &MenuItem) -> String {
+    match item.alt_key {
+        Some(alt) => format!("{}/{}", key_label(item.key), alt),
+        None => key_label(item.key),
+    }
+}
+
 /// Render the menu centred over `area`, sized to its content.
 pub fn render(f: &mut Frame, area: Rect, menu: &Menu) {
     let key_w = menu
         .items
         .iter()
-        .map(|i| key_label(i.key).chars().count())
+        .map(|i| item_key_label(i).chars().count())
         .max()
         .unwrap_or(1);
     let label_w = menu
@@ -131,17 +142,20 @@ pub fn render(f: &mut Frame, area: Rect, menu: &Menu) {
         } else {
             Style::default()
         };
+        // Pad the label so the selected background fills the whole inner row
+        // instead of ending where the text does.
         lines.push(Line::from(vec![
             Span::styled(" ", row_style),
             Span::styled(
-                format!("{:<key_w$}", key_label(item.key), key_w = key_w),
+                format!("{:<key_w$}", item_key_label(item), key_w = key_w),
                 row_style.fg(th::ACCENT),
             ),
             Span::styled("  ", row_style),
-            Span::styled(item.label.clone(), row_style.fg(
-                if selected { th::TEXT } else { th::MUTED },
-            )),
-            Span::styled(" ", row_style),
+            Span::styled(
+                format!("{:<label_w$}", item.label, label_w = label_w),
+                row_style.fg(if selected { th::TEXT } else { th::MUTED }),
+            ),
+            Span::styled("   ", row_style),
         ]));
     }
 

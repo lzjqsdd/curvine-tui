@@ -288,10 +288,21 @@ fn render_detail(f: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(th::MUTED),
                 ));
             }
-            spans.push(Span::styled(
-                "   x menu",
-                Style::default().fg(th::BORDER),
+            // The hint is right-aligned so it survives long owner/mtime
+            // values; drop trailing detail spans rather than clipping it.
+            let hint = Span::styled("x menu ", Style::default().fg(th::BORDER));
+            let width = area.width as usize;
+            let mut used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+            while used + hint.content.chars().count() + 1 > width && spans.len() > 1 {
+                if let Some(last) = spans.pop() {
+                    used = used.saturating_sub(last.content.chars().count());
+                }
+            }
+            used = spans.iter().map(|s| s.content.chars().count()).sum();
+            spans.push(Span::raw(
+                " ".repeat(width.saturating_sub(used + hint.content.chars().count()).max(1)),
             ));
+            spans.push(hint);
             Line::from(spans)
         }
         None => Line::from(Span::styled(

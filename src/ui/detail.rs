@@ -20,6 +20,9 @@ use super::{
 };
 use crate::app::{DetailKind, DetailView};
 
+/// (offset, len, available replicas, total replicas, non-live states)
+type BlockAgg<'a> = (i64, i64, usize, usize, Vec<&'a str>);
+
 pub fn render(f: &mut Frame, view: &DetailView, area: Rect) {
     match view.kind {
         DetailKind::File => render_file(f, view, area),
@@ -30,7 +33,9 @@ pub fn render(f: &mut Frame, view: &DetailView, area: Rect) {
 fn render_file(f: &mut Frame, view: &DetailView, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(34), Constraint::Min(3)])
+        // Just over a third gives the 7-row kv block its headline plus one
+        // row of breathing room; the tables take everything below.
+        .constraints([Constraint::Percentage(36), Constraint::Min(3)])
         .split(area);
 
     render_kv(f, view, rows[0]);
@@ -46,7 +51,7 @@ fn render_file(f: &mut Frame, view: &DetailView, area: Rect) {
 fn render_worker(f: &mut Frame, view: &DetailView, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(62), Constraint::Min(3)])
+        .constraints([Constraint::Percentage(64), Constraint::Min(3)])
         .split(area);
     render_kv(f, view, rows[0]);
     render_storage(f, view, rows[1]);
@@ -72,13 +77,16 @@ fn value_tone(key: &str, value: &str) -> Tone {
 }
 
 fn render_kv(f: &mut Frame, view: &DetailView, area: Rect) {
+    // Two extra cells guarantee a gap after the longest label; without it the
+    // widest key ("modified") would run straight into its value.
     let label_w = view
         .rows
         .iter()
         .map(|(k, _)| k.chars().count())
         .max()
-        .unwrap_or(8);
-    let mut lines: Vec<Line> = vec![Line::from("")];
+        .unwrap_or(8)
+        + 2;
+    let mut lines: Vec<Line> = Vec::new();
     if let Some((tag, subject)) = &view.headline {
         lines.push(Line::from(vec![
             Span::raw("  "),
@@ -86,27 +94,9 @@ fn render_kv(f: &mut Frame, view: &DetailView, area: Rect) {
             Span::raw(" "),
             Span::styled(subject.clone(), Style::default().fg(th::ACCENT)),
         ]));
-        lines.push(Line::from(""));
     }
     for (key, value) in &view.rows {
         lines.push(kv_line(key, value.clone(), value_tone(key, value), label_w));
-    }
-    if let Some(err) = &view.error {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Tag::solid("error", Tone::Error).span(),
-            Span::styled(format!(" {err}"), Style::default().fg(th::ERROR)),
-        ]));
-    }
-    if view.loading {
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                format!("{} loading block locations…", components::live_spinner()),
-                Style::default().fg(th::MUTED),
-            ),
-        ]));
     }
 
     f.render_widget(
@@ -118,7 +108,7 @@ fn render_kv(f: &mut Frame, view: &DetailView, area: Rect) {
 
 fn render_blocks(f: &mut Frame, view: &DetailView, area: Rect) {
     // One row per block, with the replica count collapsed into avail/total.
-    let mut per_block: BTreeMap<&str, (i64, i64, usize, usize, Vec<&str>)> = BTreeMap::new();
+    let mut per_block: BTreeMap<&str, BlockAgg> = BTreeMap::new();
     for r in &view.blocks {
         let entry = per_block
             .entry(r.block_id.as_str())
@@ -131,7 +121,11 @@ fn render_blocks(f: &mut Frame, view: &DetailView, area: Rect) {
         }
     }
 
-    let rows: Vec<Row> = per_block
+    // The table is titled by offset, so sort by it rather than by block id.
+    let mut blocks: Vec<(&str, BlockAgg)> = per_block.into_iter().collect();
+    blocks.sort_by_key(|(id, (offset, ..))| (*offset, *id));
+
+    let rows: Vec<Row> = blocks
         .iter()
         .map(|(id, (offset, len, avail, total, bad))| {
             let tone = if *avail == 0 {
@@ -168,10 +162,17 @@ fn render_blocks(f: &mut Frame, view: &DetailView, area: Rect) {
             .add_modifier(Modifier::BOLD),
     );
 
-    let title = if per_block.is_empty() {
+    let title = if blocks.is_empty() {
         "blocks by offset".to_string()
     } else {
-        format!("blocks by offset — {}", per_block.len())
+        format!("blocks by offset — {}", blocks.len())
+    };
+    let badge = if let Some(err) = &view.error {
+        Tag::new(format!("error: {err}"), Tone::Error)
+    } else if view.loading {
+        Tag::new(format!("{} loading", components::live_spinner()), Tone::Accent)
+    } else {
+        Tag::new("replica availability", Tone::Neutral)
     };
     let table = Table::new(
         rows,
@@ -184,10 +185,7 @@ fn render_blocks(f: &mut Frame, view: &DetailView, area: Rect) {
         ],
     )
     .header(header)
-    .block(components::panel_block_badged(
-        &title,
-        Tag::new("replica availability", Tone::Neutral),
-    ))
+    .block(components::panel_block_badged(&title, badge))
     .column_spacing(1);
     f.render_widget(table, area);
 }
@@ -220,7 +218,7 @@ fn render_distribution(f: &mut Frame, view: &DetailView, area: Rect) {
                 Cell::from(human_bytes(w.bytes)),
                 Cell::from(format!(
                     "{} {:>3.0}%",
-                    bar(share, 8),
+                    bar(share, 5),
                     share * 100.0
                 ))
                 .style(Style::default().fg(th::usage_tone(1.0 - share).color())),
@@ -248,10 +246,10 @@ fn render_distribution(f: &mut Frame, view: &DetailView, area: Rect) {
     let table = Table::new(
         rows,
         [
-            Constraint::Min(16),
-            Constraint::Length(7),
+            Constraint::Min(8),
+            Constraint::Length(6),
             Constraint::Length(9),
-            Constraint::Length(14),
+            Constraint::Length(11),
         ],
     )
     .header(header)

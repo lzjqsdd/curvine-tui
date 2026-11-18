@@ -17,14 +17,14 @@ client and server must be the same version.
 | Panel | Backing CLI commands | State |
 |---|---|---|
 | Dashboard | `report`, `dfs df` | ✅ single cluster panel (capacity, namespace, members) + worker table |
-| Files | `fs ls`, `mkdir`, `rm`, `mv` | ✅ browse, filter, icons, replica factor, describe, confirmed delete |
-| Nodes | `node` | ✅ per-worker endpoint, disk occupancy, describe |
+| Files | `fs ls`, `mkdir`, `rm`, `mv` | ✅ browse, filter, icons, multi-select, batch delete/free, full-screen detail |
+| Nodes | `node` | ✅ per-worker endpoint, disk occupancy, full-screen detail |
 | Mounts | `mount`, `umount` | ✅ mount form, unmount confirm, mode/storage badges |
-| Jobs | `load-list`, `load-status`, `transfer` | ⚠️ jobs started by this session only |
+| Jobs | `load-list`, `load-status`, `transfer` | ⚠️ jobs started by this session only; cancel supported |
 | Transfers | `fs put`, `fs get` | ✅ live progress bars, per-file speed, cancel |
-| Fsck | `fsck` | ✅ recursive replica scan, unhealthy-file drill-down |
+| Fsck | `fsck` | ✅ recursive replica scan, selectable unhealthy files, detail drill-down |
 | Bench | `bench` | ✅ metadata + throughput metrics, p50/p95/p99, tunable |
-| Command line | all of the above | ✅ `:` prompt with CLI-style syntax |
+| Command line | all of the above | ✅ `:` prompt, completion and history |
 
 Not yet wired: `cat` viewer, `export`, `transfer` submission, `chmod`/`chown`,
 `du`/`count`, `bench prefill`, `mount --check-path-consist` and resync.
@@ -75,30 +75,86 @@ Options mirror the CLI's precedence rules (`--conf` > `CURVINE_CONF_FILE` > defa
 
 ## Keybindings
 
+The UI is contextual: the header names the active panel, the footer shows the
+keys for that context, and `x` opens a menu with the same actions so nothing is
+hidden behind memorisation.
+
+### Global
+
 | Key | Action |
 |---|---|
-| `tab` / `shift-tab` | switch panel |
-| `1`–`7` | jump to panel |
+| `x` | open the contextual action menu |
+| `1`–`8` / `tab` / `shift-tab` | switch panel |
 | `j` / `k`, `↑` / `↓` | move selection |
-| `enter` / `l` | enter directory |
-| `backspace` / `h` | parent directory |
-| `/` | filter listing |
-| `.` | toggle hidden files |
-| `m` | create directory |
-| `d` / `D` | delete / delete recursive |
-| `p` / `g` | upload / download (put / get form) |
-| `n` / `u` | new mount (form) / unmount selection (confirm) |
-| `d` | describe the selected file (blocks) or worker |
-| `Del` / `D` | delete / delete recursively — both ask first |
-| `F` | free cached blocks for the selection |
-| `enter` (Fsck) | scan; `f` targets the browsed directory; `x` cancels |
-| `enter` (Bench) | run; `p`/`t`/`d` tune profile/threads/duration |
-| `x` | cancel selected transfer |
-| `c` | clear finished transfers |
-| `r` | refresh panel |
-| `:` | command line (`ls`, `cd`, `mkdir`, `rm`, `mv`, `put`, `get`, `cancel`, `load`, `panel`, `refresh`) |
+| `d` | full-screen detail (files, workers) |
+| `r` | refresh the active panel |
+| `:` | command line — `tab` completes, `↑`/`↓` browse history, `⏎` runs |
 | `?` | help |
-| `q` / `ctrl-c` | quit |
+| `esc` | close the menu/detail, or clear file marks |
+| `q` / `ctrl-c` | quit (detail/menu close instead) |
+
+### Files
+
+| Key | Action |
+|---|---|
+| `⏎` / `l` | enter directory |
+| `⌫` / `h` | parent directory |
+| `/` / `.` | filter listing / toggle hidden files |
+| `space` | mark or unmark the highlighted entry |
+| `a` / `u` | mark every visible entry / clear all marks |
+| `d` | full-screen file detail (blocks + worker distribution) |
+| `Del` / `D` | delete / delete recursively — both ask first |
+| `F` | free cached blocks |
+| `m` | create directory |
+| `p` / `g` | upload / download (put / get form) |
+
+With entries marked, the menu offers batch delete/free; the confirmation states
+the number of marked items.
+
+### Per panel
+
+| Panel | Keys |
+|---|---|
+| Dashboard | `↑↓` select worker · `d` worker detail · `r` refresh |
+| Nodes | `↑↓` select worker · `d` worker detail · `r` refresh |
+| Mounts | `↑↓` select · `n` new mount · `u` unmount (confirm) · `r` refresh |
+| Jobs | `↑↓` select · `c` cancel job · `r` refresh |
+| Transfers | `↑↓` select · `Del` cancel · `c` clear finished · `p`/`g` upload/download |
+| Fsck | `↑↓` select bad file · `⏎` open detail · `s` scan · `f` target browsed dir |
+| Bench | `b` run · `p` profile · `t` threads · `d` duration |
+
+In a full-screen detail view, `esc`/`q` returns and `1`–`8`/`tab` switches panel.
+The command table is `ls cd mkdir rm mv put get mount umount load fsck bench
+panel refresh help quit` (plus `cancel`); suggestions appear above the footer
+while typing.
+
+## Architecture
+
+```
+src/
+├── main.rs        terminal setup, event loop
+├── app.rs         state + reducer (keys, menus, details, commands)
+├── config.rs      ClusterConf loading with CLI overrides
+├── event.rs       input thread, tick thread, async task results
+├── anim.rs        springs, transitions, frame-rate governor
+├── transfer.rs    streaming upload/download with throttled progress
+├── ui/
+│   ├── mod.rs     frame layout, header/footer, shared formatters
+│   ├── theme.rs   palette + usage thresholds
+│   ├── components.rs  tags, bars, KV lines, inputs, dialogs, help
+│   ├── menu.rs        contextual action menu widget
+│   ├── detail.rs      full-screen file/worker detail views
+│   ├── mounts.rs      mount table + mount form + unmount confirm
+│   ├── transfers.rs   progress table + put/get form
+│   ├── fsck.rs        health gauges + unhealthy files
+│   ├── bench.rs       knobs + metrics table
+│   └── {dashboard,files,nodes,jobs}.rs
+└── tests.rs       render smoke tests across panels, states and sizes
+```
+
+Long-running RPCs are spawned onto curvine's `Runtime` and report back through a
+single `AppEvent` channel, so the UI never blocks on network I/O. Stale
+responses (e.g. an `ls` that returns after the user navigated away) are dropped.
 
 ## Architecture
 
@@ -256,7 +312,7 @@ Panels share one widget vocabulary so the UI reads consistently:
 | **Input / Choice / Toggle** | the three form control styles used by the mount and transfer forms. |
 | **Badged panel title** | `mounts — 3 entries  [2 stale]`. |
 | **Rounded borders** | every panel and dialog uses `BorderType::Rounded`. |
-| **Nerd Font icons** | per-file-extension glyphs in the listing, per-panel glyphs in the tabs. Purely decorative: nothing depends on them semantically. |
+| **Nerd Font icons** | per-file-extension glyphs in the listing, per-panel glyphs in the context header. Purely decorative: nothing depends on them semantically. |
 
 Every panel also reserves a bottom strip for selection detail or queue counters,
 so the same shape repeats across Files, Mounts, Transfers and Fsck.
@@ -267,7 +323,7 @@ so the same shape repeats across Files, Mounts, Transfers and Fsck.
   capacity/available/used bytes. The bar is labelled as occupancy.
 - **`replicas` in the file listing is the replication factor**, not the number of
   live copies. It is drawn with a neutral dot and labelled "configured factor" in
-  the describe popup. Whether those copies exist is answered by Fsck, which
+  the full-screen detail view. Whether those copies exist is answered by Fsck, which
   compares block locations against the expected count.
 
 Worker identity is always the `ip:port` endpoint. `WorkerAddress`'s `Display`

@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use super::{
-    components::{self, bar_with_pct, kv_line, Tag, Tone},
+    components::{self, kv_line, Tag, Tone},
     human_bytes, theme as th,
 };
 use crate::app::App;
@@ -19,7 +19,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // verdict gauge
-            Constraint::Length(10), // numeric summary, one kv row per counter
+            Constraint::Length(8), // numeric summary, one kv row per counter
             Constraint::Min(3),    // unhealthy files
         ])
         .split(area);
@@ -105,7 +105,6 @@ fn render_summary(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Tone::Warn
             };
-            lines.push(kv_line("scanned", s.root.clone(), Tone::Info, 18));
             lines.push(kv_line(
                 "files",
                 format!("{} files", s.file_count),
@@ -114,22 +113,29 @@ fn render_summary(f: &mut Frame, app: &App, area: Rect) {
             ));
             lines.push(kv_line(
                 "blocks",
-                format!("{} blocks", s.block_count),
+                format!("{} block{}", s.block_count, if s.block_count == 1 { "" } else { "s" }),
                 Tone::Neutral,
                 18,
             ));
             lines.push(kv_line(
                 "replicas",
                 format!(
-                    "{}/{} available ({} recorded)",
-                    s.available_replicas, s.expected_replicas, s.recorded_replicas
+                    "{}/{} available · {} recorded · {} unavailable",
+                    s.available_replicas,
+                    s.expected_replicas,
+                    s.recorded_replicas,
+                    s.unavailable_replicas
                 ),
                 replica_tone,
                 18,
             ));
             lines.push(kv_line(
                 "under-replicated",
-                format!("{} blocks", s.under_replicated_blocks),
+                format!(
+                    "{} block{}",
+                    s.under_replicated_blocks,
+                    if s.under_replicated_blocks == 1 { "" } else { "s" }
+                ),
                 if s.under_replicated_blocks == 0 {
                     Tone::Ok
                 } else {
@@ -139,7 +145,11 @@ fn render_summary(f: &mut Frame, app: &App, area: Rect) {
             ));
             lines.push(kv_line(
                 "empty",
-                format!("{} blocks", s.missing_replica_blocks),
+                format!(
+                    "{} block{}",
+                    s.missing_replica_blocks,
+                    if s.missing_replica_blocks == 1 { "" } else { "s" }
+                ),
                 if s.missing_replica_blocks == 0 {
                     Tone::Neutral
                 } else {
@@ -149,7 +159,11 @@ fn render_summary(f: &mut Frame, app: &App, area: Rect) {
             ));
             lines.push(kv_line(
                 "errors",
-                format!("{} scan errors", s.errors.len()),
+                format!(
+                    "{} scan error{}",
+                    s.errors.len(),
+                    if s.errors.len() == 1 { "" } else { "s" }
+                ),
                 if s.errors.is_empty() {
                     Tone::Neutral
                 } else {
@@ -157,17 +171,6 @@ fn render_summary(f: &mut Frame, app: &App, area: Rect) {
                 },
                 18,
             ));
-            let r = s.health_ratio;
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("  {:<18}", "health"),
-                    Style::default().fg(th::MUTED),
-                ),
-                Span::styled(
-                    bar_with_pct(r, 20),
-                    Style::default().fg(th::usage_tone(1.0 - r).color()),
-                ),
-            ]));
         }
         None => lines.push(Line::from(Span::styled(
             "  run a scan to populate this panel",

@@ -93,7 +93,7 @@ fn render_jobs_table(f: &mut Frame, app: &App, area: Rect) {
 
     let mut state = TableState::default();
     if !rows.is_empty() {
-        state.select(Some(0));
+        state.select(Some(app.job_selected.min(rows.len() - 1)));
     }
 
     let table = Table::new(rows, widths)

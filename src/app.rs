@@ -53,23 +53,9 @@ impl Panel {
         }
     }
 
-    /// Nerd Font glyph shown in the tab strip.
+    /// Nerd Font glyph used in the context header.
     pub fn icon(self) -> &'static str {
         crate::ui::icons::for_panel(self)
-    }
-
-    /// Compact label used when the tab bar cannot fit full titles.
-    pub fn short_title(self) -> &'static str {
-        match self {
-            Panel::Dashboard => "Dash",
-            Panel::Files => "Files",
-            Panel::Nodes => "Nodes",
-            Panel::Mounts => "Mounts",
-            Panel::Jobs => "Jobs",
-            Panel::Transfers => "Xfer",
-            Panel::Fsck => "Fsck",
-            Panel::Bench => "Bench",
-        }
     }
 
     pub fn index(self) -> usize {
@@ -351,9 +337,6 @@ pub struct PendingConfirm {
 #[derive(Debug, Clone, Default)]
 pub struct DescribeView {
     pub title: String,
-    /// What this popup is about (a path or a worker address). Async responses
-    /// are matched against it so a late reply cannot populate a newer popup.
-    pub subject: String,
     pub headline: Option<(String, String)>,
     pub rows: Vec<(String, String)>,
     /// Per-worker block distribution, already aggregated and sorted.
@@ -1041,7 +1024,14 @@ impl App {
                 }
             },
             TaskResult::Jobs(res) => match res {
-                Ok(j) => self.jobs.ok(j),
+                Ok(j) => {
+                    self.jobs.ok(j);
+                    if let Some(l) = self.jobs.data.as_ref() {
+                        if self.job_selected >= l.len() {
+                            self.job_selected = l.len().saturating_sub(1);
+                        }
+                    }
+                }
                 Err(e) => {
                     self.jobs.fail(e.clone());
                     self.set_status(format!("jobs: {e}"), true);
@@ -1294,6 +1284,7 @@ impl App {
         use MenuAction::*;
         let item = |key: char, label: &str, action: MenuAction| MenuItem {
             key,
+            alt_key: None,
             label: label.to_string(),
             action,
         };
@@ -1301,16 +1292,26 @@ impl App {
             Panel::Files => {
                 if !self.files.marked.is_empty() {
                     let n = self.files.marked.len();
+                    let noun = if n == 1 { "item" } else { "items" };
                     return vec![
-                        item(KEY_DELETE, &format!("delete {n} marked items"), FileDelete { recursive: true }),
-                        item('F', &format!("free {n} marked items"), FileFree),
+                        item(
+                            KEY_DELETE,
+                            &format!("delete {n} marked {noun}"),
+                            FileDelete { recursive: true },
+                        ),
+                        item('F', &format!("free {n} marked {noun}"), FileFree),
                         item('u', "clear marks", FileClearMarks),
                     ];
                 }
                 match self.files.selected_entry() {
                     Some(e) if e.is_dir => vec![
                         item(KEY_ENTER, "enter directory", FileEnter),
-                        item(KEY_DELETE, "delete recursively", FileDelete { recursive: true }),
+                        MenuItem {
+                            key: KEY_DELETE,
+                            alt_key: Some('D'),
+                            label: "delete recursively".to_string(),
+                            action: FileDelete { recursive: true },
+                        },
                         item('r', "refresh", Refresh),
                     ],
                     Some(_) => vec![
@@ -2339,11 +2340,12 @@ impl App {
         let paths = self.files.marked.clone();
         let n = paths.len();
         let what = if free { "free" } else { "delete" };
+        let noun = if n == 1 { "item" } else { "items" };
         let mut lines = vec![
-            format!("count      {n} marked items"),
-            format!("scope      every marked path under {}", self.files.cwd),
+            format!("count      {n} marked {noun}"),
+            "scope      absolute paths, across directories if marked".to_string(),
             String::new(),
-            format!("{what} {n} marked items?"),
+            format!("{what} {n} marked {noun}?"),
         ];
         if !free {
             lines.push("this removes the entries and all of their block replicas.".to_string());
@@ -2357,7 +2359,7 @@ impl App {
                 PendingAction::Delete { paths, recursive: true }
             },
             title: if free { "free marked items" } else { "delete marked items" }.to_string(),
-            target: format!("{n} marked items"),
+            target: format!("{n} marked {noun}"),
             lines,
         });
         self.mode = InputMode::Confirm;
@@ -2396,7 +2398,6 @@ impl App {
         if entry.is_dir {
             let mut view = DescribeView {
                 title: format!("describe {}", entry.name),
-                subject: path.clone(),
                 headline: Some(("directory".to_string(), path)),
                 rows: base_rows,
                 worker_blocks: Vec::new(),
