@@ -363,6 +363,34 @@ pub struct DescribeView {
     pub loading: bool,
 }
 
+/// Which full-screen detail layout to draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailKind {
+    File,
+    Worker,
+}
+
+/// Full-screen detail for a file or worker. Replaces the old describe popup
+/// for these two subjects; `DescribeView` is kept for directory popups.
+#[derive(Debug, Clone)]
+pub struct DetailView {
+    pub title: String,
+    /// What the view is about (a path or worker endpoint). Async block replies
+    /// are matched against it so a late response cannot fill a newer view.
+    pub subject: String,
+    pub kind: DetailKind,
+    pub headline: Option<(String, String)>,
+    pub rows: Vec<(String, String)>,
+    /// Flat replicas, sorted by offset; the renderer aggregates per block.
+    pub blocks: Vec<crate::event::BlockRow>,
+    /// Per-worker aggregate, already sorted.
+    pub worker_blocks: Vec<WorkerBlocks>,
+    /// Storage-class breakdown for workers.
+    pub storage: Vec<(String, i64)>,
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
 /// Blocks held by one worker, used for the distribution view.
 #[derive(Debug, Clone)]
 pub struct WorkerBlocks {
@@ -511,8 +539,10 @@ pub struct App {
     pub command_history_pos: Option<usize>,
     /// Blocking confirmation for a destructive action.
     pub confirm: Option<PendingConfirm>,
-    /// Read-only detail popup for the current selection.
+    /// Read-only popup for directory details.
     pub describe: Option<DescribeView>,
+    /// Full-screen detail view for files and workers.
+    pub detail: Option<DetailView>,
     pub(crate) next_transfer_id: u64,
 
     /// Every time-based value the UI renders. Advanced once per frame.
@@ -566,6 +596,7 @@ impl App {
             command_history_pos: None,
             confirm: None,
             describe: None,
+            detail: None,
             next_transfer_id: 1,
             anim: AnimState::new(reduced_motion),
             log: Vec::new(),
@@ -1058,12 +1089,13 @@ impl App {
                 }
             }
             TaskResult::Describe { path, blocks } => {
-                // Ignore a response for a popup the user already closed.
-                let mut closed = false;
-                if let Some(view) = self.describe.as_mut() {
-                    if view.subject != path {
-                        closed = true;
-                    } else {
+                // Only the view that asked for this path may consume it; a
+                // response that arrives after the user closed or moved on is
+                // dropped instead of resurrecting an old panel.
+                let mut consumed = false;
+                if let Some(view) = self.detail.as_mut() {
+                    if view.subject == path {
+                        consumed = true;
                         view.loading = false;
                         match blocks {
                             Ok(rows) => {
@@ -1086,6 +1118,7 @@ impl App {
                                 }
                             }
                             Err(e) => {
+                                view.error = Some(e.clone());
                                 if let Some(slot) =
                                     view.rows.iter_mut().find(|(k, _)| k == "blocks")
                                 {
@@ -1094,11 +1127,9 @@ impl App {
                             }
                         }
                     }
-                } else {
-                    closed = true;
                 }
-                if closed {
-                    self.log(format!("describe {path}: popup closed, response dropped"));
+                if !consumed {
+                    self.log(format!("describe {path}: view closed, response dropped"));
                 }
             }
             TaskResult::Fsck(res) => match *res {
@@ -1481,22 +1512,26 @@ impl App {
     fn on_detail_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
+                self.detail = None;
                 self.mode = InputMode::Normal;
             }
             KeyCode::Tab => {
                 let i = self.panel.index();
                 self.panel = Panel::ALL[(i + 1) % Panel::ALL.len()];
+                self.detail = None;
                 self.mode = InputMode::Normal;
                 self.refresh_panel();
             }
             KeyCode::BackTab => {
                 let i = self.panel.index();
                 self.panel = Panel::ALL[(i + Panel::ALL.len() - 1) % Panel::ALL.len()];
+                self.detail = None;
                 self.mode = InputMode::Normal;
                 self.refresh_panel();
             }
             KeyCode::Char(c @ '1'..='8') => {
                 self.panel = Panel::ALL[(c as usize) - ('1' as usize)];
+                self.detail = None;
                 self.mode = InputMode::Normal;
                 self.refresh_panel();
             }
@@ -1504,7 +1539,7 @@ impl App {
         }
     }
 
-    /// `d` on the Nodes panel — full worker detail.
+    /// `d` on the Nodes/Dashboard panels — full-screen worker detail.
     pub(crate) fn node_describe(&mut self) {
         let Some(w) = self
             .cluster
@@ -1519,9 +1554,10 @@ impl App {
 
         let r = crate::ui::ratio(w.fs_used, w.capacity.max(1));
         let free = (w.capacity - w.fs_used).max(0);
-        let mut view = DescribeView {
-            title: "describe worker".to_string(),
+        let view = DetailView {
+            title: "worker".to_string(),
             subject: w.address.clone(),
+            kind: DetailKind::Worker,
             headline: Some(("worker".to_string(), w.address.clone())),
             rows: vec![
                 ("endpoint".into(), w.address.clone()),
@@ -1542,19 +1578,15 @@ impl App {
                 ),
                 ("blocks".into(), w.block_num.to_string()),
             ],
-            worker_blocks: Vec::new(),
             blocks: Vec::new(),
+            worker_blocks: Vec::new(),
+            storage: w.storage.clone(),
             loading: false,
+            error: None,
         };
 
-        // Storage classes are a per-disk breakdown when the cluster reports it.
-        for (kind, size) in &w.storage {
-            view.rows
-                .push((format!("storage {kind}"), crate::ui::human_bytes(*size)));
-        }
-
-        self.describe = Some(view);
-        self.mode = InputMode::Describe;
+        self.detail = Some(view);
+        self.mode = InputMode::Detail;
     }
 
     fn on_mounts_key(&mut self, key: KeyEvent) {
@@ -2210,7 +2242,7 @@ impl App {
         self.mode = InputMode::Confirm;
     }
 
-    /// `d` — request full detail for the highlighted entry.
+    /// `d` — full-screen detail for a file, describe popup for a directory.
     fn files_describe(&mut self) {
         let Some(entry) = self.files.selected_entry().cloned() else {
             self.set_status("nothing selected", true);
@@ -2218,52 +2250,59 @@ impl App {
         };
         let path = join_path(&self.files.cwd, &entry.name);
 
-        let mut view = DescribeView {
-            title: format!("describe {}", entry.name),
-            subject: path.clone(),
-            headline: Some((
-                if entry.is_dir { "directory" } else { "file" }.to_string(),
-                path.clone(),
-            )),
-            rows: vec![
-                ("path".into(), path.clone()),
-                (
-                    "mode".into(),
-                    format!("{} ({:04o})", crate::ui::format_mode(entry.mode, entry.is_dir), entry.mode),
-                ),
-                ("owner".into(), format!("{}:{}", entry.owner, entry.group)),
-                (
-                    "size".into(),
-                    if entry.is_dir {
-                        "—".to_string()
-                    } else {
-                        format!("{} ({} bytes)", crate::ui::human_bytes(entry.len), entry.len)
-                    },
-                ),
-                ("modified".into(), crate::ui::format_mtime(entry.mtime)),
-                (
-                    "replicas".into(),
-                    format!("{} (configured factor)", entry.replicas),
-                ),
-            ],
-            worker_blocks: Vec::new(),
-            blocks: Vec::new(),
-            loading: false,
-        };
+        let base_rows: Vec<(String, String)> = vec![
+            ("path".into(), path.clone()),
+            (
+                "mode".into(),
+                format!("{} ({:04o})", crate::ui::format_mode(entry.mode, entry.is_dir), entry.mode),
+            ),
+            ("owner".into(), format!("{}:{}", entry.owner, entry.group)),
+            (
+                "size".into(),
+                if entry.is_dir {
+                    "—".to_string()
+                } else {
+                    format!("{} ({} bytes)", crate::ui::human_bytes(entry.len), entry.len)
+                },
+            ),
+            ("modified".into(), crate::ui::format_mtime(entry.mtime)),
+            (
+                "replicas".into(),
+                format!("{} (configured factor)", entry.replicas),
+            ),
+        ];
 
         if entry.is_dir {
+            let mut view = DescribeView {
+                title: format!("describe {}", entry.name),
+                subject: path.clone(),
+                headline: Some(("directory".to_string(), path)),
+                rows: base_rows,
+                worker_blocks: Vec::new(),
+                blocks: Vec::new(),
+                loading: false,
+            };
             view.rows.push(("kind".into(), "directory".to_string()));
             self.describe = Some(view);
             self.mode = InputMode::Describe;
             return;
         }
 
-        // Files get block-level detail; show the popup immediately so the UI
-        // never appears frozen while the block locations are fetched.
-        view.rows.push(("blocks".into(), "loading…".to_string()));
-        view.loading = true;
-        self.describe = Some(view);
-        self.mode = InputMode::Describe;
+        let mut rows = base_rows;
+        rows.push(("blocks".into(), "loading…".to_string()));
+        self.detail = Some(DetailView {
+            title: format!("file {}", entry.name),
+            subject: path.clone(),
+            kind: DetailKind::File,
+            headline: Some(("file".to_string(), path.clone())),
+            rows,
+            blocks: Vec::new(),
+            worker_blocks: Vec::new(),
+            storage: Vec::new(),
+            loading: true,
+            error: None,
+        });
+        self.mode = InputMode::Detail;
 
         let client = self.client.clone();
         let tx = self.tx.clone();

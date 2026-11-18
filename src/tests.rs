@@ -60,6 +60,7 @@ fn test_app() -> App {
         command_history_pos: None,
         confirm: None,
         describe: None,
+        detail: None,
         next_transfer_id: 1,
         anim: crate::anim::AnimState::new(false),
         log: vec!["test".to_string()],
@@ -705,64 +706,221 @@ fn confirm_dialog_renders_the_target_and_is_destructive() {
 }
 
 #[test]
-fn d_opens_describe_with_file_detail() {
+fn d_opens_full_screen_file_detail() {
     let mut app = test_app();
     app.panel = Panel::Files;
     populate_sample_data(&mut app);
     app.files.selected = 1;
 
-    app.on_event(crate::event::AppEvent::Key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Char('d'),
-        crossterm::event::KeyModifiers::NONE,
-    )));
+    press(&mut app, crossterm::event::KeyCode::Char('d'));
 
-    let view = app.describe.as_ref().expect("d must open describe");
-    assert_eq!(app.mode, crate::app::InputMode::Describe);
-    assert!(view.title.contains("describe"));
+    let view = app.detail.as_ref().expect("d must open the file detail");
+    assert_eq!(app.mode, crate::app::InputMode::Detail);
+    assert_eq!(view.kind, crate::app::DetailKind::File);
+    assert!(view.title.contains("events.parquet"));
     assert!(view.subject.ends_with("events.parquet"));
+    assert!(view.loading, "block locations are fetched asynchronously");
     let keys: Vec<&str> = view.rows.iter().map(|(k, _)| k.as_str()).collect();
-    for expected in ["path", "mode", "owner", "size", "replicas", "blocks"] {
+    for expected in ["path", "mode", "owner", "size", "replicas", "blocks", "modified"] {
         assert!(keys.contains(&expected), "missing {expected} row: {keys:?}");
     }
+    // Files no longer use the describe popup.
+    assert!(app.describe.is_none());
 }
 
 #[test]
-fn d_on_nodes_describes_the_worker() {
+fn directory_d_still_uses_the_describe_popup() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 0; // warehouse/
+
+    press(&mut app, crossterm::event::KeyCode::Char('d'));
+    assert!(app.detail.is_none(), "directories keep the small popup");
+    let view = app.describe.as_ref().expect("directory describe missing");
+    assert!(view.title.contains("warehouse"));
+    assert_eq!(app.mode, crate::app::InputMode::Describe);
+}
+
+#[test]
+fn file_detail_renders_blocks_and_distribution() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.mode = crate::app::InputMode::Detail;
+    app.detail = Some(crate::app::DetailView {
+        title: "file events.parquet".into(),
+        subject: "/data/events.parquet".into(),
+        kind: crate::app::DetailKind::File,
+        headline: Some(("file".into(), "/data/events.parquet".into())),
+        rows: vec![
+            ("path".into(), "/data/events.parquet".into()),
+            ("mode".into(), "-rw-r--r-- (0644)".into()),
+            ("blocks".into(), "2 across 2 workers".into()),
+        ],
+        blocks: vec![
+            crate::event::BlockRow {
+                block_id: "101".into(),
+                offset: 0,
+                len: 1_500_000,
+                worker: "127.0.0.1:8997".into(),
+                available: true,
+                state: "Live".into(),
+            },
+            crate::event::BlockRow {
+                block_id: "101".into(),
+                offset: 0,
+                len: 1_500_000,
+                worker: "127.0.0.2:8997".into(),
+                available: false,
+                state: "Lost".into(),
+            },
+            crate::event::BlockRow {
+                block_id: "102".into(),
+                offset: 1_500_000,
+                len: 1_000_000,
+                worker: "127.0.0.1:8997".into(),
+                available: true,
+                state: "Live".into(),
+            },
+        ],
+        worker_blocks: crate::app::aggregate_by_worker(&[
+            crate::event::BlockRow {
+                block_id: "101".into(),
+                offset: 0,
+                len: 1_500_000,
+                worker: "127.0.0.1:8997".into(),
+                available: true,
+                state: "Live".into(),
+            },
+            crate::event::BlockRow {
+                block_id: "102".into(),
+                offset: 1_500_000,
+                len: 1_000_000,
+                worker: "127.0.0.1:8997".into(),
+                available: true,
+                state: "Live".into(),
+            },
+            crate::event::BlockRow {
+                block_id: "101".into(),
+                offset: 0,
+                len: 1_500_000,
+                worker: "127.0.0.2:8997".into(),
+                available: false,
+                state: "Lost".into(),
+            },
+        ]),
+        storage: Vec::new(),
+        loading: false,
+        error: None,
+    });
+
+    let out = render_app(&app, 120, 34);
+    assert!(out.contains("file events.parquet"), "detail title missing:\n{out}");
+    assert!(out.contains("blocks by offset"), "block table missing");
+    assert!(out.contains("distribution by worker"), "distribution table missing");
+    assert!(out.contains("1/2"), "replica availability missing");
+    assert!(out.contains("Lost"), "lost replica state missing");
+    assert!(out.contains("127.0.0.1:8997"), "worker endpoint missing");
+    assert!(out.contains("share"), "share column missing");
+}
+
+#[test]
+fn late_block_response_fills_the_open_detail_view() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 1;
+    press(&mut app, crossterm::event::KeyCode::Char('d'));
+
+    app.on_event(crate::event::AppEvent::TaskDone(
+        crate::event::TaskResult::Describe {
+            path: "/data/events.parquet".into(),
+            blocks: Ok(vec![crate::event::BlockRow {
+                block_id: "101".into(),
+                offset: 0,
+                len: 1_500_000,
+                worker: "127.0.0.1:8997".into(),
+                available: true,
+                state: "Live".into(),
+            }]),
+        },
+    ));
+
+    let view = app.detail.as_ref().expect("detail stays open");
+    assert!(!view.loading, "response must clear the loading state");
+    assert_eq!(view.blocks.len(), 1);
+    assert_eq!(view.worker_blocks.len(), 1);
+    let blocks_row = view.rows.iter().find(|(k, _)| k == "blocks").unwrap();
+    assert!(blocks_row.1.contains("1 across 1 workers"), "summary not updated: {}", blocks_row.1);
+}
+
+#[test]
+fn switching_panels_closes_the_detail_view() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 1;
+    press(&mut app, crossterm::event::KeyCode::Char('d'));
+    assert_eq!(app.mode, crate::app::InputMode::Detail);
+
+    press(&mut app, crossterm::event::KeyCode::Char('3'));
+    assert_eq!(app.panel, Panel::Nodes);
+    assert!(app.detail.is_none(), "panel switch must close the detail");
+    assert_eq!(app.mode, crate::app::InputMode::Normal);
+}
+
+#[test]
+fn d_on_nodes_opens_the_worker_detail() {
     let mut app = test_app();
     app.panel = Panel::Nodes;
     populate_sample_data(&mut app);
     app.node_selected = 0;
 
-    app.on_event(crate::event::AppEvent::Key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Char('d'),
-        crossterm::event::KeyModifiers::NONE,
-    )));
+    press(&mut app, crossterm::event::KeyCode::Char('d'));
 
-    let view = app.describe.as_ref().expect("d must describe the worker");
+    let view = app.detail.as_ref().expect("d must open worker detail");
+    assert_eq!(view.kind, crate::app::DetailKind::Worker);
+    assert_eq!(app.mode, crate::app::InputMode::Detail);
     assert!(view.subject.contains("127.0.0.1"));
-    assert!(!view.subject.contains("worker_id"), "subject must not use the verbose worker_id form");
+    assert!(
+        !view.subject.contains("worker_id"),
+        "subject must not use the verbose worker_id form"
+    );
     let keys: Vec<&str> = view.rows.iter().map(|(k, _)| k.as_str()).collect();
     for expected in ["capacity", "used", "free", "occupancy", "blocks"] {
         assert!(keys.contains(&expected), "missing {expected}: {keys:?}");
     }
-    // The occupancy row must say it is not CPU load.
     let occ = view.rows.iter().find(|(k, _)| k == "occupancy").unwrap();
     assert!(occ.1.contains("not CPU load"), "occupancy mislabelled: {}", occ.1);
+    assert_eq!(view.storage.len(), 1, "storage breakdown must be retained");
 }
 
 #[test]
-fn escape_closes_the_describe_popup() {
+fn worker_detail_renders_the_endpoint_and_storage_classes() {
     let mut app = test_app();
     app.panel = Panel::Nodes;
     populate_sample_data(&mut app);
     app.node_describe();
-    assert!(app.describe.is_some());
 
-    app.on_event(crate::event::AppEvent::Key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Esc,
-        crossterm::event::KeyModifiers::NONE,
-    )));
-    assert!(app.describe.is_none());
+    let out = render_app(&app, 120, 34);
+    assert!(out.contains("worker"), "detail title missing:\n{out}");
+    assert!(out.contains("127.0.0.1:8997"), "endpoint missing");
+    assert!(out.contains("storage classes"), "storage table missing");
+    assert!(out.contains("Ssd"), "storage class missing");
+    assert!(out.contains("capacity"), "capacity row missing");
+}
+
+#[test]
+fn escape_closes_the_full_screen_detail() {
+    let mut app = test_app();
+    app.panel = Panel::Nodes;
+    populate_sample_data(&mut app);
+    app.node_describe();
+    assert!(app.detail.is_some());
+
+    press(&mut app, crossterm::event::KeyCode::Esc);
+    assert!(app.detail.is_none());
     assert_eq!(app.mode, crate::app::InputMode::Normal);
 }
 
@@ -849,14 +1007,15 @@ fn dashboard_has_no_duplicated_aggregates() {
 }
 
 #[test]
-fn describe_groups_blocks_by_worker() {
+fn detail_groups_blocks_by_worker() {
     let mut app = test_app();
     app.panel = Panel::Files;
     populate_sample_data(&mut app);
-    app.mode = crate::app::InputMode::Describe;
-    app.describe = Some(crate::app::DescribeView {
-        title: "describe events.parquet".into(),
+    app.mode = crate::app::InputMode::Detail;
+    app.detail = Some(crate::app::DetailView {
+        title: "file events.parquet".into(),
         subject: "/data/events.parquet".into(),
+        kind: crate::app::DetailKind::File,
         headline: Some(("file".into(), "/data/events.parquet".into())),
         rows: vec![("replicas".into(), "3 (configured factor)".into())],
         worker_blocks: vec![
@@ -893,14 +1052,24 @@ fn describe_groups_blocks_by_worker() {
                 state: "Lost".into(),
             },
         ],
+        storage: Vec::new(),
         loading: false,
+        error: None,
     });
 
     let out = render_app(&app, 116, 32);
     assert!(out.contains("distribution by worker"), "worker section missing:\n{out}");
     assert!(out.contains("blocks by offset"), "block section missing");
     assert!(out.contains("127.0.0.1:8997"), "worker endpoint missing");
-    assert!(out.contains("2 blocks"), "per-worker block count missing");
+    assert!(out.contains("101"), "block id missing");
+    let worker_row = out
+        .lines()
+        .find(|l| l.contains("127.0.0.1:8997"))
+        .unwrap_or_default();
+    assert!(
+        worker_row.contains('2'),
+        "per-worker block count missing: {worker_row:?}"
+    );
     // The lost replica must be visible as its state, not just a count.
     assert!(out.contains("Lost"), "non-live replica state missing");
 }
@@ -1491,22 +1660,22 @@ fn dialogs_are_complete_on_the_first_frame() {
 }
 
 #[test]
-fn describe_dialog_is_complete_on_the_first_frame() {
+fn detail_view_is_complete_on_the_first_frame() {
+    // Opening detail must never show a half-built panel: tables and the kv
+    // region are present immediately, with blocks filled in when they arrive.
     let mut app = test_app();
     app.panel = Panel::Files;
     populate_sample_data(&mut app);
     app.files.selected = 1;
 
-    app.on_event(crate::event::AppEvent::Key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Char('d'),
-        crossterm::event::KeyModifiers::NONE,
-    )));
+    press(&mut app, crossterm::event::KeyCode::Char('d'));
 
     let first = render_app(&app, 116, 30);
-    assert!(first.contains("describe"), "title missing:
-{first}");
+    assert!(first.contains("file events.parquet"), "title missing:\n{first}");
     assert!(first.contains("mode"), "detail rows missing");
-    assert!(first.contains("close"), "footer missing");
+    assert!(first.contains("blocks by offset"), "block table missing");
+    assert!(first.contains("distribution by worker"), "distribution table missing");
+    assert!(first.contains("esc/q close"), "footer hints missing");
 }
 
 #[test]

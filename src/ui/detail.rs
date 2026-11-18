@@ -1,0 +1,322 @@
+//! Full-screen detail views for files and workers.
+//!
+//! These replace the old describe popup for the two subjects that need room:
+//! a file's block map plus per-worker distribution, and a worker's full
+//! endpoint/capacity/storage breakdown.
+
+use std::collections::BTreeMap;
+
+use ratatui::{
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Cell, Row, Table},
+    Frame,
+};
+
+use super::{
+    components::{self, bar, bar_with_pct, kv_line, section, Tag, Tone},
+    human_bytes, theme as th,
+};
+use crate::app::{DetailKind, DetailView};
+
+pub fn render(f: &mut Frame, view: &DetailView, area: Rect) {
+    match view.kind {
+        DetailKind::File => render_file(f, view, area),
+        DetailKind::Worker => render_worker(f, view, area),
+    }
+}
+
+fn render_file(f: &mut Frame, view: &DetailView, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(34), Constraint::Min(3)])
+        .split(area);
+
+    render_kv(f, view, rows[0]);
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(56), Constraint::Percentage(44)])
+        .split(rows[1]);
+    render_blocks(f, view, cols[0]);
+    render_distribution(f, view, cols[1]);
+}
+
+fn render_worker(f: &mut Frame, view: &DetailView, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(62), Constraint::Min(3)])
+        .split(area);
+    render_kv(f, view, rows[0]);
+    render_storage(f, view, rows[1]);
+}
+
+fn value_tone(key: &str, value: &str) -> Tone {
+    match key {
+        "state" => components::tone_for_status(value),
+        "path" | "endpoint" | "ip" => Tone::Info,
+        "blocks" => Tone::Accent,
+        "occupancy" => {
+            // The string is "NN.N% (disk, not CPU load)"; thresholds still
+            // apply to the number before the percent sign.
+            let pct = value
+                .split('%')
+                .next()
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .unwrap_or(0.0);
+            th::usage_tone(pct / 100.0)
+        }
+        _ => Tone::Neutral,
+    }
+}
+
+fn render_kv(f: &mut Frame, view: &DetailView, area: Rect) {
+    let label_w = view
+        .rows
+        .iter()
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(8);
+    let mut lines: Vec<Line> = vec![Line::from("")];
+    if let Some((tag, subject)) = &view.headline {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Tag::solid(tag.clone(), Tone::Info).span(),
+            Span::raw(" "),
+            Span::styled(subject.clone(), Style::default().fg(th::ACCENT)),
+        ]));
+        lines.push(Line::from(""));
+    }
+    for (key, value) in &view.rows {
+        lines.push(kv_line(key, value.clone(), value_tone(key, value), label_w));
+    }
+    if let Some(err) = &view.error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Tag::solid("error", Tone::Error).span(),
+            Span::styled(format!(" {err}"), Style::default().fg(th::ERROR)),
+        ]));
+    }
+    if view.loading {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("{} loading block locations…", components::live_spinner()),
+                Style::default().fg(th::MUTED),
+            ),
+        ]));
+    }
+
+    f.render_widget(
+        ratatui::widgets::Paragraph::new(lines)
+            .block(components::panel_block(&view.title)),
+        area,
+    );
+}
+
+fn render_blocks(f: &mut Frame, view: &DetailView, area: Rect) {
+    // One row per block, with the replica count collapsed into avail/total.
+    let mut per_block: BTreeMap<&str, (i64, i64, usize, usize, Vec<&str>)> = BTreeMap::new();
+    for r in &view.blocks {
+        let entry = per_block
+            .entry(r.block_id.as_str())
+            .or_insert((r.offset, r.len, 0, 0, Vec::new()));
+        entry.3 += 1;
+        if r.available {
+            entry.2 += 1;
+        } else if !entry.4.contains(&r.state.as_str()) {
+            entry.4.push(r.state.as_str());
+        }
+    }
+
+    let rows: Vec<Row> = per_block
+        .iter()
+        .map(|(id, (offset, len, avail, total, bad))| {
+            let tone = if *avail == 0 {
+                Tone::Error
+            } else if avail < total {
+                Tone::Warn
+            } else {
+                Tone::Ok
+            };
+            Row::new(vec![
+                Cell::from((*id).to_string()).style(Style::default().fg(th::DIR)),
+                Cell::from(human_bytes(*len)).style(Style::default().fg(th::TEXT)),
+                Cell::from(human_bytes(*offset)).style(Style::default().fg(th::MUTED)),
+                Cell::from(components::dot_label(tone, format!("{avail}/{total}"))),
+                Cell::from(if bad.is_empty() {
+                    Span::styled("live", Style::default().fg(th::OK))
+                } else {
+                    Span::styled(bad.join(", "), Style::default().fg(th::ERROR))
+                }),
+            ])
+        })
+        .collect();
+
+    let header = Row::new(vec![
+        Cell::from("block"),
+        Cell::from("size"),
+        Cell::from("offset"),
+        Cell::from("avail"),
+        Cell::from("state"),
+    ])
+    .style(
+        Style::default()
+            .fg(th::ACCENT_DIM)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let title = if per_block.is_empty() {
+        "blocks by offset".to_string()
+    } else {
+        format!("blocks by offset — {}", per_block.len())
+    };
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(14),
+            Constraint::Length(9),
+            Constraint::Length(9),
+            Constraint::Length(7),
+            Constraint::Min(8),
+        ],
+    )
+    .header(header)
+    .block(components::panel_block_badged(
+        &title,
+        Tag::new("replica availability", Tone::Neutral),
+    ))
+    .column_spacing(1);
+    f.render_widget(table, area);
+}
+
+fn render_distribution(f: &mut Frame, view: &DetailView, area: Rect) {
+    let total_bytes: i64 = view.worker_blocks.iter().map(|w| w.bytes).sum();
+    let rows: Vec<Row> = view
+        .worker_blocks
+        .iter()
+        .map(|w| {
+            let tone = if w.available == w.total {
+                Tone::Ok
+            } else if w.available == 0 {
+                Tone::Error
+            } else {
+                Tone::Warn
+            };
+            let share = if total_bytes > 0 {
+                w.bytes as f64 / total_bytes as f64
+            } else {
+                0.0
+            };
+            Row::new(vec![
+                Cell::from(Line::from(vec![
+                    components::dot(tone),
+                    Span::raw(" "),
+                    Span::styled(w.worker.clone(), Style::default().fg(th::TEXT)),
+                ])),
+                Cell::from(w.block_ids.len().to_string()),
+                Cell::from(human_bytes(w.bytes)),
+                Cell::from(format!(
+                    "{} {:>3.0}%",
+                    bar(share, 8),
+                    share * 100.0
+                ))
+                .style(Style::default().fg(th::usage_tone(1.0 - share).color())),
+            ])
+        })
+        .collect();
+
+    let header = Row::new(vec![
+        Cell::from("worker"),
+        Cell::from("blocks"),
+        Cell::from("bytes"),
+        Cell::from("share"),
+    ])
+    .style(
+        Style::default()
+            .fg(th::ACCENT_DIM)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let title = if view.worker_blocks.is_empty() {
+        "distribution by worker".to_string()
+    } else {
+        format!("distribution by worker — {}", view.worker_blocks.len())
+    };
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(16),
+            Constraint::Length(7),
+            Constraint::Length(9),
+            Constraint::Length(14),
+        ],
+    )
+    .header(header)
+    .block(components::panel_block(&title))
+    .column_spacing(1);
+    f.render_widget(table, area);
+}
+
+fn render_storage(f: &mut Frame, view: &DetailView, area: Rect) {
+    let total: i64 = view.storage.iter().map(|(_, v)| *v).sum();
+    let rows: Vec<Row> = view
+        .storage
+        .iter()
+        .map(|(class, bytes)| {
+            let share = if total > 0 {
+                *bytes as f64 / total as f64
+            } else {
+                0.0
+            };
+            Row::new(vec![
+                Cell::from(Tag::new(class.clone(), Tone::Info).cell()),
+                Cell::from(human_bytes(*bytes)).style(Style::default().fg(th::TEXT)),
+                Cell::from(bar_with_pct(share, 16))
+                    .style(Style::default().fg(th::usage_tone(1.0 - share).color())),
+            ])
+        })
+        .collect();
+    let header = Row::new(vec![
+        Cell::from("class"),
+        Cell::from("capacity"),
+        Cell::from("share"),
+    ])
+    .style(
+        Style::default()
+            .fg(th::ACCENT_DIM)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let mut lines: Vec<Line> = Vec::new();
+    if view.storage.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(section("no storage breakdown reported by this worker"));
+    }
+
+    // The storage table and the empty-state note share the same block so the
+    // lower third never looks like an unexplained blank panel.
+    if rows.is_empty() {
+        f.render_widget(
+            ratatui::widgets::Paragraph::new(lines)
+                .block(components::panel_block("storage classes")),
+            area,
+        );
+        return;
+    }
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(14),
+            Constraint::Length(12),
+            Constraint::Min(20),
+        ],
+    )
+    .header(header)
+    .block(components::panel_block("storage classes"))
+    .column_spacing(1);
+    f.render_widget(table, area);
+}

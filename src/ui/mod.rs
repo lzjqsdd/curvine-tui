@@ -12,6 +12,7 @@ use crate::app::{App, InputMode, Panel};
 
 pub mod components;
 pub mod dashboard;
+pub mod detail;
 pub mod files;
 pub mod icons;
 pub mod jobs;
@@ -42,15 +43,19 @@ pub fn render(f: &mut Frame, app: &App) {
 
     render_header(f, app, chunks[0]);
 
-    match app.panel {
-        Panel::Dashboard => dashboard::render(f, app, chunks[1]),
-        Panel::Files => files::render(f, app, chunks[1]),
-        Panel::Nodes => nodes::render(f, app, chunks[1]),
-        Panel::Mounts => mounts::render(f, app, chunks[1]),
-        Panel::Jobs => jobs::render(f, app, chunks[1]),
-        Panel::Transfers => transfers::render(f, app, chunks[1]),
-        Panel::Fsck => fsck::render(f, app, chunks[1]),
-        Panel::Bench => bench::render(f, app, chunks[1]),
+    if let (InputMode::Detail, Some(view)) = (app.mode, &app.detail) {
+        detail::render(f, view, chunks[1]);
+    } else {
+        match app.panel {
+            Panel::Dashboard => dashboard::render(f, app, chunks[1]),
+            Panel::Files => files::render(f, app, chunks[1]),
+            Panel::Nodes => nodes::render(f, app, chunks[1]),
+            Panel::Mounts => mounts::render(f, app, chunks[1]),
+            Panel::Jobs => jobs::render(f, app, chunks[1]),
+            Panel::Transfers => transfers::render(f, app, chunks[1]),
+            Panel::Fsck => fsck::render(f, app, chunks[1]),
+            Panel::Bench => bench::render(f, app, chunks[1]),
+        }
     }
 
     if app.mode == InputMode::Command {
