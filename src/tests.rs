@@ -35,10 +35,13 @@ fn test_app() -> App {
         should_quit: false,
         status: String::new(),
         status_is_error: false,
+        refresh_secs: 5,
+        next_refresh: std::time::Instant::now() + std::time::Duration::from_secs(5),
         files: FilesState::default(),
         cluster: Loadable::default(),
         mounts: Loadable::default(),
         jobs: Loadable::default(),
+        job_selected: 0,
         tracked_jobs: Vec::new(),
         fsck: Loadable::default(),
         fsck_path: "/".to_string(),
@@ -52,6 +55,9 @@ fn test_app() -> App {
         mount_selected: 0,
         mount_form: None,
         node_selected: 0,
+        menu: None,
+        command_history: Vec::new(),
+        command_history_pos: None,
         confirm: None,
         describe: None,
         next_transfer_id: 1,
@@ -332,19 +338,20 @@ fn renders_at_pathological_sizes_without_panicking() {
 }
 
 #[test]
-fn every_panel_tab_is_reachable_at_narrow_widths() {
-    // Regression: ratatui's Tabs adds 1 cell of padding on each side, which
-    // used to push the trailing tabs off-screen at 80 columns.
-    // The last panel is the one that used to fall off the end of the strip.
+fn header_identifies_the_active_panel_at_narrow_widths() {
+    // The tab strip is gone; the active panel now lives in the one-line
+    // context header and must never be the part that gets dropped.
     let last = *Panel::ALL.last().unwrap();
-    for width in [60u16, 80, 100, 120] {
+    for width in [40u16, 60, 80, 100, 120] {
         let out = render_panel(last, width, 30, false);
-        let header = out.lines().nth(1).unwrap_or_default();
-        // Either the number or the title must be visible for the active panel.
+        let header = out.lines().next().unwrap_or_default();
         assert!(
-            header.contains(&format!(" {}", Panel::ALL.len())),
-            "tab index {} missing from header at width {width}: {header:?}",
-            Panel::ALL.len()
+            header.contains("❖ curvine-tui"),
+            "identity missing from header at width {width}: {header:?}"
+        );
+        assert!(
+            header.contains(last.title()),
+            "active panel missing from header at width {width}: {header:?}"
         );
     }
 }
@@ -760,17 +767,53 @@ fn escape_closes_the_describe_popup() {
 }
 
 #[test]
-fn header_tabs_carry_icons() {
-    let app = test_app();
+fn header_shows_the_active_panel_icon_and_context() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
     let out = render_app(&app, 118, 30);
-    let header = out.lines().nth(1).unwrap_or_default();
-    for panel in Panel::ALL {
-        assert!(
-            header.contains(crate::ui::icons::for_panel(panel)),
-            "panel {:?} tab lacks its icon: {header:?}",
-            panel
-        );
-    }
+    let header = out.lines().next().unwrap_or_default();
+    assert!(
+        header.contains("❖ curvine-tui"),
+        "product identity missing: {header:?}"
+    );
+    assert!(
+        header.contains(&format!(" {}", app.panel.title())) || header.contains(app.panel.title()),
+        "active panel name missing: {header:?}"
+    );
+    // Cluster context: health dot, active master, worker count, refresh timer.
+    assert!(header.contains("master-1:8995"), "master missing: {header:?}");
+    assert!(header.contains("1 worker"), "worker count missing: {header:?}");
+    assert!(header.contains('↻'), "refresh countdown missing: {header:?}");
+    assert!(header.contains("1-8"), "panel shortcut hint missing");
+    assert!(header.contains("command"), "command hint missing");
+}
+
+#[test]
+fn header_reports_disconnected_without_cluster_data() {
+    let app = test_app();
+    let out = render_app(&app, 110, 30);
+    let header = out.lines().next().unwrap_or_default();
+    assert!(header.contains("disconnected"), "expected a disconnected state: {header:?}");
+    assert!(header.contains(crate::ui::components::DOT_HOLLOW), "expected a hollow dot");
+}
+
+#[test]
+fn footer_merges_status_and_context_hints() {
+    let mut app = test_app();
+    app.panel = Panel::Dashboard;
+    populate_sample_data(&mut app);
+    app.set_status_for_test("saved 12 files");
+    let out = render_app(&app, 120, 30);
+    let footer = out.lines().last().unwrap_or_default();
+    assert!(footer.contains("saved 12 files"), "status missing from footer: {footer:?}");
+    assert!(footer.contains("x menu"), "panel hints missing from footer: {footer:?}");
+    // The old separate status/hint rows are gone: the last two lines are the
+    // footer and something from panel content, not a second chrome row.
+    assert!(
+        !out.lines().nth_back(1).unwrap_or_default().contains("saved 12 files"),
+        "status must not occupy its own row above the footer"
+    );
 }
 
 #[test]

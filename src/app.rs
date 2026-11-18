@@ -12,6 +12,7 @@ use crate::event::{
 };
 use crate::rpc::ClusterClient;
 use crate::anim::AnimState;
+use crate::ui::menu::{Menu, MenuAction, MenuItem, KEY_DELETE, KEY_ENTER};
 use crate::transfer::{new_cancel_flag, spawn_transfer, CancelFlag};
 use curvine_runtime::runtime::RpcRuntime;
 
@@ -89,8 +90,12 @@ pub enum InputMode {
     Mount,
     /// Destructive-action confirmation popup.
     Confirm,
-    /// Read-only detail popup.
+    /// Read-only detail popup (directories, confirmations).
     Describe,
+    /// Contextual action menu.
+    Menu,
+    /// Full-screen detail view.
+    Detail,
 }
 
 /// Per-panel load state, so we can render spinners and errors uniformly.
@@ -139,6 +144,9 @@ pub struct FilesState {
     pub filter: String,
     pub load: Loadable<()>,
     pub show_hidden: bool,
+    /// Absolute paths marked for batch operations. Paths, not names, so two
+    /// entries with the same name in different directories cannot collide.
+    pub marked: Vec<String>,
 }
 
 impl Default for FilesState {
@@ -150,6 +158,7 @@ impl Default for FilesState {
             filter: String::new(),
             load: Loadable::default(),
             show_hidden: true,
+            marked: Vec::new(),
         }
     }
 }
@@ -183,6 +192,37 @@ impl FilesState {
 
     pub fn move_up(&mut self) {
         self.selected = self.selected.saturating_sub(1);
+    }
+
+    /// Absolute path of the highlighted row.
+    pub fn selected_path(&self) -> Option<String> {
+        self.selected_entry()
+            .map(|e| join_path(&self.cwd, &e.name))
+    }
+
+    pub fn is_marked(&self, path: &str) -> bool {
+        self.marked.iter().any(|m| m == path)
+    }
+
+    pub fn toggle_mark(&mut self, path: String) {
+        if let Some(pos) = self.marked.iter().position(|m| *m == path) {
+            self.marked.remove(pos);
+        } else {
+            self.marked.push(path);
+        }
+    }
+
+    pub fn mark_all_visible(&mut self) {
+        let paths: Vec<String> = self
+            .visible()
+            .iter()
+            .map(|e| join_path(&self.cwd, &e.name))
+            .collect();
+        for path in paths {
+            if !self.is_marked(&path) {
+                self.marked.push(path);
+            }
+        }
     }
 }
 
@@ -436,10 +476,16 @@ pub struct App {
     pub status: String,
     pub status_is_error: bool,
 
+    /// Configured auto-refresh interval, and the moment the next tick lands.
+    /// The header renders the remaining seconds as a countdown.
+    pub refresh_secs: u64,
+    pub next_refresh: Instant,
+
     pub files: FilesState,
     pub cluster: Loadable<ClusterSnapshot>,
     pub mounts: Loadable<Vec<MountRow>>,
     pub jobs: Loadable<Vec<JobRow>>,
+    pub job_selected: usize,
     /// Jobs this session started. The client library has no "list jobs" call,
     /// so this is the only way to show more than a single lookup.
     pub tracked_jobs: Vec<String>,
@@ -457,6 +503,12 @@ pub struct App {
     pub mount_selected: usize,
     pub mount_form: Option<MountForm>,
     pub node_selected: usize,
+    /// Contextual action menu (`x`), when open.
+    pub menu: Option<crate::ui::menu::Menu>,
+    /// Recently executed `:` commands, newest last.
+    pub command_history: Vec<String>,
+    /// Position while browsing history with ↑/↓, or None for a fresh line.
+    pub command_history_pos: Option<usize>,
     /// Blocking confirmation for a destructive action.
     pub confirm: Option<PendingConfirm>,
     /// Read-only detail popup for the current selection.
@@ -476,7 +528,9 @@ impl App {
         client: ClusterClient,
         tx: mpsc::UnboundedSender<AppEvent>,
         reduced_motion: bool,
+        refresh_secs: u64,
     ) -> Self {
+        let refresh_secs = refresh_secs.max(1);
         let mut app = Self {
             cfg,
             client,
@@ -487,10 +541,13 @@ impl App {
             should_quit: false,
             status: String::new(),
             status_is_error: false,
+            refresh_secs,
+            next_refresh: Instant::now() + std::time::Duration::from_secs(refresh_secs),
             files: FilesState::default(),
             cluster: Loadable::default(),
             mounts: Loadable::default(),
             jobs: Loadable::default(),
+            job_selected: 0,
             tracked_jobs: Vec::new(),
             fsck: Loadable::default(),
             fsck_path: "/".to_string(),
@@ -504,6 +561,9 @@ impl App {
             mount_selected: 0,
             mount_form: None,
             node_selected: 0,
+            menu: None,
+            command_history: Vec::new(),
+            command_history_pos: None,
             confirm: None,
             describe: None,
             next_transfer_id: 1,
@@ -519,6 +579,14 @@ impl App {
         app.refresh_files();
         app.refresh_cluster();
         app
+    }
+
+    /// Seconds left until the next automatic refresh, as shown in the header.
+    pub fn refresh_countdown_secs(&self) -> u64 {
+        self.next_refresh
+            .saturating_duration_since(Instant::now())
+            .as_secs_f64()
+            .ceil() as u64
     }
 
     pub fn log(&mut self, msg: impl Into<String>) {
@@ -809,6 +877,8 @@ impl App {
             AppEvent::Mouse(_) => {}
             AppEvent::Frame(dt) => self.on_frame(dt),
             AppEvent::Tick => {
+                self.next_refresh =
+                    Instant::now() + std::time::Duration::from_secs(self.refresh_secs);
                 // Auto-refresh the active data panel if stale.
                 match self.panel {
                     Panel::Dashboard | Panel::Nodes => self.refresh_cluster(),
@@ -1085,6 +1155,8 @@ impl App {
             InputMode::Mount => return self.on_mount_key(key),
             InputMode::Confirm => return self.on_confirm_key(key),
             InputMode::Describe => return self.on_describe_key(key),
+            InputMode::Menu => return self.on_menu_key(key),
+            InputMode::Detail => return self.on_detail_key(key),
             InputMode::Normal => {}
         }
 
@@ -1119,10 +1191,216 @@ impl App {
                 self.refresh_panel();
             }
             KeyCode::Char('r') => self.refresh_panel(),
+            KeyCode::Char('x') => self.open_menu(),
             KeyCode::Char('p') => self.open_form(TransferKind::Upload),
             KeyCode::Char('g') => self.open_form(TransferKind::Download),
             _ => self.on_panel_key(key),
         }
+    }
+
+    // ------------------------------------------------------------ action menu
+
+    /// Short, stable name for the menu title: the current selection.
+    fn menu_subject(&self) -> String {
+        let raw = match self.panel {
+            Panel::Files => self
+                .files
+                .selected_entry()
+                .map(|e| e.name.clone())
+                .or_else(|| Some(self.files.cwd.clone())),
+            Panel::Nodes | Panel::Dashboard => self
+                .cluster
+                .data
+                .as_ref()
+                .and_then(|c| c.workers.get(self.node_selected))
+                .map(|w| w.address.clone()),
+            Panel::Mounts => self
+                .mounts
+                .data
+                .as_ref()
+                .and_then(|l| l.get(self.mount_selected))
+                .map(|m| m.cv_path.clone()),
+            Panel::Jobs => self
+                .jobs
+                .data
+                .as_ref()
+                .and_then(|l| l.get(self.job_selected))
+                .map(|j| j.job_id.clone()),
+            Panel::Transfers => self
+                .transfers
+                .get(self.transfer_selected)
+                .map(|t| format!("#{} {}", t.id, t.remote)),
+            Panel::Fsck => Some(self.fsck_path.clone()),
+            Panel::Bench => Some(self.bench_opts.base_path.clone()),
+        };
+        truncate_menu_title(raw.unwrap_or_else(|| self.panel.title().to_string()))
+    }
+
+    /// Contextual menu entries. This is the single place that encodes what an
+    /// `x` press can do, so the menu and the direct keys cannot drift apart.
+    pub fn menu_items(&self) -> Vec<MenuItem> {
+        use MenuAction::*;
+        let item = |key: char, label: &str, action: MenuAction| MenuItem {
+            key,
+            label: label.to_string(),
+            action,
+        };
+        match self.panel {
+            Panel::Files => {
+                if !self.files.marked.is_empty() {
+                    let n = self.files.marked.len();
+                    return vec![
+                        item(KEY_DELETE, &format!("delete {n} marked items"), FileDelete { recursive: true }),
+                        item('F', &format!("free {n} marked items"), FileFree),
+                        item('u', "clear marks", FileClearMarks),
+                    ];
+                }
+                match self.files.selected_entry() {
+                    Some(e) if e.is_dir => vec![
+                        item(KEY_ENTER, "enter directory", FileEnter),
+                        item(KEY_DELETE, "delete recursively", FileDelete { recursive: true }),
+                        item('r', "refresh", Refresh),
+                    ],
+                    Some(_) => vec![
+                        item('d', "detail", FileDetail),
+                        item(KEY_DELETE, "delete", FileDelete { recursive: false }),
+                        item('F', "free cached blocks", FileFree),
+                        item('p', "upload", FileUpload),
+                        item('r', "refresh", Refresh),
+                    ],
+                    None => vec![item('r', "refresh", Refresh)],
+                }
+            }
+            Panel::Dashboard | Panel::Nodes => vec![
+                item('d', "detail", NodeDetail),
+                item('r', "refresh", Refresh),
+            ],
+            Panel::Mounts => vec![
+                item('n', "new mount", MountNew),
+                item('u', "unmount", MountUmount),
+                item('r', "refresh", Refresh),
+            ],
+            Panel::Jobs => {
+                let mut items = Vec::new();
+                let running = self
+                    .jobs
+                    .data
+                    .as_ref()
+                    .and_then(|l| l.get(self.job_selected))
+                    .map(|j| !j.state.to_ascii_lowercase().contains("complete"))
+                    .unwrap_or(false);
+                if running {
+                    items.push(item('c', "cancel job", JobCancel));
+                }
+                items.push(item('r', "refresh", Refresh));
+                items
+            }
+            Panel::Transfers => vec![
+                item('x', "cancel selected", TransferCancel),
+                item('c', "clear finished", TransferClear),
+                item('p', "upload", FileUpload),
+                item('g', "download", FileDownload),
+            ],
+            Panel::Fsck => vec![
+                item('s', "scan", FsckScan),
+                item('x', "abort scan", FsckAbort),
+                item('f', "target = browsed directory", FsckTargetCwd),
+                item('r', "rescan", FsckScan),
+            ],
+            Panel::Bench => vec![
+                item('b', "run benchmark", BenchRun),
+                item('p', "toggle profile", BenchProfile),
+                item('t', "toggle threads", BenchThreads),
+                item('d', "toggle duration", BenchDuration),
+            ],
+        }
+    }
+
+    pub fn open_menu(&mut self) {
+        let title = self.menu_subject();
+        match Menu::new(title, self.menu_items()) {
+            Some(menu) => {
+                self.menu = Some(menu);
+                self.mode = InputMode::Menu;
+            }
+            None => self.set_status("no actions for the current selection", true),
+        }
+    }
+
+    fn close_menu(&mut self) {
+        self.menu = None;
+        self.mode = InputMode::Normal;
+    }
+
+    fn on_menu_key(&mut self, key: KeyEvent) {
+        let Some(menu) = self.menu.as_mut() else {
+            self.mode = InputMode::Normal;
+            return;
+        };
+        let direct = match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                menu.move_down();
+                return;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                menu.move_up();
+                return;
+            }
+            KeyCode::Esc => {
+                self.close_menu();
+                return;
+            }
+            KeyCode::Enter => menu.selected_item().map(|i| i.action),
+            KeyCode::Delete => menu.item_for_key(KEY_DELETE).map(|i| i.action),
+            KeyCode::Char(c) => menu.item_for_key(c).map(|i| i.action),
+            _ => None,
+        };
+        if let Some(action) = direct {
+            self.close_menu();
+            self.run_menu_action(action);
+        }
+    }
+
+    /// Execute a menu choice. Kept next to the direct-key handlers so both
+    /// paths share one implementation.
+    fn run_menu_action(&mut self, action: MenuAction) {
+        use MenuAction::*;
+        match action {
+            FileDetail => self.files_describe(),
+            FileEnter => self.files_enter(),
+            FileDelete { recursive } => self.files_request_delete(recursive),
+            FileFree => self.files_request_free(false),
+            FileUpload => self.open_form(TransferKind::Upload),
+            FileDownload => self.open_form(TransferKind::Download),
+            FileClearMarks => self.clear_marks(),
+            NodeDetail => self.node_describe(),
+            MountNew => {
+                let cwd = self.files.cwd.clone();
+                self.mount_form = Some(MountForm::new(&cwd));
+                self.mode = InputMode::Mount;
+            }
+            MountUmount => self.request_unmount(),
+            JobCancel => self.cancel_selected_job(),
+            TransferCancel => self.cancel_selected_transfer(),
+            TransferClear => self.clear_finished_transfers(),
+            FsckScan => self.start_fsck(),
+            FsckAbort => self.cancel_fsck(),
+            FsckTargetCwd => {
+                self.fsck_path = self.files.cwd.clone();
+                self.set_status(format!("fsck target: {}", self.fsck_path), false);
+            }
+            BenchRun => self.start_bench(),
+            BenchProfile => self.bench_toggle_profile(),
+            BenchThreads => self.bench_toggle_threads(),
+            BenchDuration => self.bench_toggle_duration(),
+            Refresh => self.refresh_panel(),
+        }
+    }
+
+    fn clear_marks(&mut self) {
+        let n = self.files.marked.len();
+        self.files.marked.clear();
+        self.set_status(format!("cleared {n} mark(s)"), false);
     }
 
     fn on_nodes_key(&mut self, key: KeyEvent) {
@@ -1137,6 +1415,79 @@ impl App {
                 self.node_selected = self.node_selected.saturating_sub(1);
             }
             KeyCode::Char('d') | KeyCode::Enter => self.node_describe(),
+            _ => {}
+        }
+    }
+
+    fn on_jobs_key(&mut self, key: KeyEvent) {
+        let n = self.jobs.data.as_ref().map(|l| l.len()).unwrap_or(0);
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                if n > 0 {
+                    self.job_selected = (self.job_selected + 1).min(n - 1);
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.job_selected = self.job_selected.saturating_sub(1);
+            }
+            KeyCode::Char('c') | KeyCode::Delete => self.cancel_selected_job(),
+            _ => {}
+        }
+    }
+
+    fn cancel_selected_job(&mut self) {
+        let Some(job) = self
+            .jobs
+            .data
+            .as_ref()
+            .and_then(|l| l.get(self.job_selected))
+            .cloned()
+        else {
+            self.set_status("no job selected", true);
+            return;
+        };
+        let id = job.job_id.clone();
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        let msg = format!("cancelled job {id}");
+        self.set_status(format!("cancel job {id}…"), false);
+        self.spawn_call(async move {
+            let res = client
+                .cancel_job(&id)
+                .await
+                .map(|_| msg)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::TaskDone(TaskResult::OpDone {
+                label: "job".to_string(),
+                result: res,
+            }));
+        });
+    }
+
+    /// Detail mode: `esc`/`q` returns to the panel. Panel switching stays live,
+    /// so a detail view never traps the user.
+    fn on_detail_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
+                self.mode = InputMode::Normal;
+            }
+            KeyCode::Tab => {
+                let i = self.panel.index();
+                self.panel = Panel::ALL[(i + 1) % Panel::ALL.len()];
+                self.mode = InputMode::Normal;
+                self.refresh_panel();
+            }
+            KeyCode::BackTab => {
+                let i = self.panel.index();
+                self.panel = Panel::ALL[(i + Panel::ALL.len() - 1) % Panel::ALL.len()];
+                self.mode = InputMode::Normal;
+                self.refresh_panel();
+            }
+            KeyCode::Char(c @ '1'..='8') => {
+                self.panel = Panel::ALL[(c as usize) - ('1' as usize)];
+                self.mode = InputMode::Normal;
+                self.refresh_panel();
+            }
             _ => {}
         }
     }
@@ -1210,27 +1561,33 @@ impl App {
                 self.mount_form = Some(MountForm::new(&cwd));
                 self.mode = InputMode::Mount;
             }
-            KeyCode::Char('u') => {
-                if let Some(m) = self.mounts.data.as_ref().and_then(|l| l.get(self.mount_selected))
-                {
-                    let path = m.cv_path.clone();
-                    let ufs = m.ufs_path.clone();
-                    self.confirm = Some(PendingConfirm {
-                        action: PendingAction::Umount { path: path.clone() },
-                        title: "unmount".to_string(),
-                        target: path,
-                        lines: vec![
-                            format!("ufs        {ufs}"),
-                            "cached data on this mount becomes unreachable until it is".to_string(),
-                            "mounted again; the ufs copy itself is not touched.".to_string(),
-                        ],
-                    });
-                    self.mode = InputMode::Confirm;
-                } else {
-                    self.set_status("no mount selected", true);
-                }
-            }
+            KeyCode::Char('u') => self.request_unmount(),
             _ => {}
+        }
+    }
+
+    fn request_unmount(&mut self) {
+        if let Some(m) = self
+            .mounts
+            .data
+            .as_ref()
+            .and_then(|l| l.get(self.mount_selected))
+        {
+            let path = m.cv_path.clone();
+            let ufs = m.ufs_path.clone();
+            self.confirm = Some(PendingConfirm {
+                action: PendingAction::Umount { path: path.clone() },
+                title: "unmount".to_string(),
+                target: path,
+                lines: vec![
+                    format!("ufs        {ufs}"),
+                    "cached data on this mount becomes unreachable until it is".to_string(),
+                    "mounted again; the ufs copy itself is not touched.".to_string(),
+                ],
+            });
+            self.mode = InputMode::Confirm;
+        } else {
+            self.set_status("no mount selected", true);
         }
     }
 
@@ -1412,7 +1769,6 @@ impl App {
     fn on_fsck_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Enter | KeyCode::Char('s') => self.start_fsck(),
-            KeyCode::Char('x') => self.cancel_fsck(),
             KeyCode::Char('f') => {
                 // Scan the directory currently open in the file browser.
                 self.fsck_path = self.files.cwd.clone();
@@ -1425,38 +1781,41 @@ impl App {
     fn on_bench_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Enter | KeyCode::Char('b') => self.start_bench(),
-            KeyCode::Char('p') => {
-                self.bench_opts.profile = match self.bench_opts.profile {
-                    curvine_bench::BenchProfile::Basic => curvine_bench::BenchProfile::Deep,
-                    curvine_bench::BenchProfile::Deep => curvine_bench::BenchProfile::Basic,
-                };
-            }
-            KeyCode::Char('t') => {
-                self.bench_opts.threads = match self.bench_opts.threads {
-                    1 => 2,
-                    2 => 4,
-                    4 => 8,
-                    _ => 1,
-                };
-            }
-            KeyCode::Char('d') => {
-                self.bench_opts.duration_ms = match self.bench_opts.duration_ms {
-                    Some(5_000) => Some(10_000),
-                    Some(10_000) => Some(30_000),
-                    Some(30_000) => Some(60_000),
-                    _ => Some(5_000),
-                };
-            }
+            KeyCode::Char('p') => self.bench_toggle_profile(),
+            KeyCode::Char('t') => self.bench_toggle_threads(),
+            KeyCode::Char('d') => self.bench_toggle_duration(),
             _ => {}
         }
+    }
+
+    fn bench_toggle_profile(&mut self) {
+        self.bench_opts.profile = match self.bench_opts.profile {
+            curvine_bench::BenchProfile::Basic => curvine_bench::BenchProfile::Deep,
+            curvine_bench::BenchProfile::Deep => curvine_bench::BenchProfile::Basic,
+        };
+    }
+
+    fn bench_toggle_threads(&mut self) {
+        self.bench_opts.threads = match self.bench_opts.threads {
+            1 => 2,
+            2 => 4,
+            4 => 8,
+            _ => 1,
+        };
+    }
+
+    fn bench_toggle_duration(&mut self) {
+        self.bench_opts.duration_ms = match self.bench_opts.duration_ms {
+            Some(5_000) => Some(10_000),
+            Some(10_000) => Some(30_000),
+            Some(30_000) => Some(60_000),
+            _ => Some(5_000),
+        };
     }
 
     fn on_panel_key(&mut self, key: KeyEvent) {
         if self.panel == Panel::Transfers {
             return self.on_transfers_key(key);
-        }
-        if self.panel == Panel::Nodes {
-            return self.on_nodes_key(key);
         }
         if self.panel == Panel::Mounts {
             return self.on_mounts_key(key);
@@ -1466,6 +1825,12 @@ impl App {
         }
         if self.panel == Panel::Bench {
             return self.on_bench_key(key);
+        }
+        if self.panel == Panel::Jobs {
+            return self.on_jobs_key(key);
+        }
+        if matches!(self.panel, Panel::Dashboard | Panel::Nodes) {
+            return self.on_nodes_key(key);
         }
         if self.panel == Panel::Files {
             match key.code {
@@ -1485,7 +1850,7 @@ impl App {
                     self.files.show_hidden = !self.files.show_hidden;
                     self.files.selected = 0;
                 }
-                KeyCode::Delete | KeyCode::Char('x') => self.files_request_delete(false),
+                KeyCode::Delete => self.files_request_delete(false),
                 KeyCode::Char('D') => self.files_request_delete(true),
                 KeyCode::Char('d') => self.files_describe(),
                 KeyCode::Char('m') => self.files_mkdir(),
@@ -1508,7 +1873,7 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.transfer_selected = self.transfer_selected.saturating_sub(1);
             }
-            KeyCode::Char('x') | KeyCode::Delete => self.cancel_selected_transfer(),
+            KeyCode::Delete => self.cancel_selected_transfer(),
             KeyCode::Char('c') => self.clear_finished_transfers(),
             KeyCode::Char('p') => self.open_form(TransferKind::Upload),
             KeyCode::Char('g') => self.open_form(TransferKind::Download),
@@ -2134,6 +2499,41 @@ impl App {
     }
 }
 
+/// Every command accepted by the `:` prompt, in help order.
+pub const COMMANDS: [&str; 17] = [
+    "ls",
+    "cd",
+    "mkdir",
+    "rm",
+    "mv",
+    "put",
+    "get",
+    "mount",
+    "umount",
+    "load",
+    "fsck",
+    "bench",
+    "panel",
+    "refresh",
+    "help",
+    "quit",
+    "cancel",
+];
+
+/// Commands whose name starts with `input`, used by Tab completion and the
+/// suggestion row above the footer.
+pub fn matching_commands(input: &str) -> Vec<&'static str> {
+    let needle = input.trim().to_ascii_lowercase();
+    if needle.is_empty() {
+        return COMMANDS.to_vec();
+    }
+    COMMANDS
+        .iter()
+        .copied()
+        .filter(|c| c.starts_with(&needle))
+        .collect()
+}
+
 /// Group replicas by worker, then sort by worker endpoint so the distribution
 /// reads as a stable table rather than block order.
 pub(crate) fn aggregate_by_worker(rows: &[crate::event::BlockRow]) -> Vec<WorkerBlocks> {
@@ -2199,6 +2599,14 @@ fn to_job_row(j: curvine_model::JobStatus) -> JobRow {
         total_bytes: total,
         loaded_bytes: loaded,
     }
+}
+
+/// Menu titles name the selection; past ~24 cells they stop being scannable.
+fn truncate_menu_title(mut title: String) -> String {
+    if title.chars().count() > 24 {
+        title = title.chars().take(23).collect::<String>() + "…";
+    }
+    title
 }
 
 pub fn join_path(base: &str, name: &str) -> String {

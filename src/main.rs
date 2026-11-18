@@ -111,7 +111,7 @@ fn main() -> anyhow::Result<()> {
 
     let reduced = args.no_anim
         || std::env::var("CURVINE_TUI_NO_ANIM").as_deref() == Ok("1");
-    let mut app = App::new(cfg, client, tx.clone(), reduced);
+    let mut app = App::new(cfg, client, tx.clone(), reduced, args.refresh);
 
     // Terminal setup / teardown guard.
     enable_raw_mode()?;
