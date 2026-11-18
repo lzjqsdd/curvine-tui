@@ -522,6 +522,25 @@ fn mount_form_renders_all_fields() {
 }
 
 #[test]
+fn mount_form_defaults_auto_cache_like_the_cli() {
+    // `cv mount` defaults new mounts to auto-cache. A cache-mode mount without
+    // it never populates Curvine, so the toggle must start on.
+    let form = crate::app::MountForm::new("/data");
+    assert!(form.auto_cache, "auto-cache must default on");
+    assert!(!form.read_verify_ufs, "read-verify stays opt-in");
+
+    let mut app = test_app();
+    app.panel = Panel::Mounts;
+    app.mode = crate::app::InputMode::Mount;
+    app.mount_form = Some(form);
+    let out = render_app(&app, 110, 34);
+    assert!(
+        out.contains("[x] auto cache"),
+        "the toggle should render as enabled:\n{out}"
+    );
+}
+
+#[test]
 fn umount_confirm_renders_target_path() {
     let mut app = test_app();
     app.panel = Panel::Mounts;

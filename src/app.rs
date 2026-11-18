@@ -410,7 +410,10 @@ impl MountForm {
             write_type: MountWriteMode::CacheMode,
             storage_type: MountStorage::Disk,
             ttl: "0".to_string(),
-            auto_cache: false,
+            // `cv mount` defaults new mounts to auto-cache; without it a
+            // cache-mode mount never populates Curvine and `free` has nothing
+            // to release. Keep the form aligned with the CLI default.
+            auto_cache: true,
             read_verify_ufs: false,
             focus: 0,
             error: None,
@@ -1172,6 +1175,16 @@ impl App {
                     }
                 }
             }
+            TaskResult::LoadSubmitted { path, result } => match result {
+                Ok(job_id) => {
+                    if !self.tracked_jobs.contains(&job_id) {
+                        self.tracked_jobs.push(job_id.clone());
+                    }
+                    self.set_status(format!("load {path}: job {job_id}"), false);
+                    self.refresh_jobs();
+                }
+                Err(e) => self.set_status(format!("load {path}: {e}"), true),
+            },
             TaskResult::OpDone { label, result } => match result {
                 Ok(msg) => {
                     self.set_status(format!("{label}: {msg}"), false);
@@ -2614,22 +2627,18 @@ impl App {
             },
             "load" => match parts.get(1) {
                 Some(p) => {
-                    let label = "load".to_string();
                     let path = p.to_string();
-                    let msg = format!("submitted load for {path}");
                     let client = self.client.clone();
                     let tx = self.tx.clone();
-                    if !self.tracked_jobs.contains(&path) {
-                        self.tracked_jobs.push(path.clone());
-                    }
+                    self.set_status(format!("submitting load for {path}…"), false);
                     self.spawn_call(async move {
+                        let submit = path.clone();
                         let res = client
-                            .submit_load(&path)
+                            .submit_load(&submit)
                             .await
-                            .map(|_| msg)
                             .map_err(|e| e.to_string());
-                        let _ = tx.send(AppEvent::TaskDone(TaskResult::OpDone {
-                            label,
+                        let _ = tx.send(AppEvent::TaskDone(TaskResult::LoadSubmitted {
+                            path: submit,
                             result: res,
                         }));
                     });

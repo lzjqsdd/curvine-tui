@@ -32,7 +32,7 @@ Not yet wired: `cat` viewer, `export`, `transfer` submission, `chmod`/`chown`,
 ### Mounts
 
 `n` opens a form covering write mode (cache/fs), storage class, TTL, auto-cache
-and read-verify; unmounting requires an explicit confirmation because cached
+(on by default, matching `cv mount`) and read-verify; unmounting requires an explicit confirmation because cached
 data on that mount becomes unreachable. Verified against a live cluster:
 mounting a local `file://` UFS makes it appear in the table, and unmounting
 removes it.

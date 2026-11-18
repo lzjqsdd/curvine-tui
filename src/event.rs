@@ -53,6 +53,11 @@ pub enum TaskResult {
         id: u64,
         result: std::result::Result<u64, String>,
     },
+    /// A load job was submitted; carries the job id the master assigned.
+    LoadSubmitted {
+        path: String,
+        result: Result<String, String>,
+    },
     OpDone {
         label: String,
         result: Result<String, String>,

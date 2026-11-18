@@ -220,11 +220,13 @@ impl ClusterClient {
         self.job.cancel_job(id).await.map_err(AppError::from_fs)
     }
 
-    pub async fn submit_load(&self, path: &str) -> Result<()> {
+    /// Submit a load and return the job id, so the UI can poll it. Without
+    /// the id the Jobs panel could never show the job it just started.
+    pub async fn submit_load(&self, path: &str) -> Result<String> {
         self.job
             .submit_load(path)
             .await
-            .map(|_| ())
+            .map(|r| r.job_id)
             .map_err(AppError::from_fs)
     }
 }
