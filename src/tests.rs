@@ -1468,6 +1468,95 @@ fn batch_free_confirmation_reports_the_mark_count() {
     assert!(out.contains("free 2 marked items?"), "count missing:\n{out}");
 }
 
+// ------------------------------------------------------------ command line
+
+fn type_str(app: &mut App, text: &str) {
+    for c in text.chars() {
+        press(app, crossterm::event::KeyCode::Char(c));
+    }
+}
+
+#[test]
+fn command_tab_completes_the_first_prefix_match() {
+    let mut app = test_app();
+    press(&mut app, crossterm::event::KeyCode::Char(':'));
+    type_str(&mut app, "l");
+    press(&mut app, crossterm::event::KeyCode::Tab);
+    assert_eq!(app.command, "ls ");
+    assert_eq!(app.mode, crate::app::InputMode::Command);
+
+    // A prefix with a longer first match still completes to that command.
+    press(&mut app, crossterm::event::KeyCode::Esc);
+    press(&mut app, crossterm::event::KeyCode::Char(':'));
+    type_str(&mut app, "mk");
+    press(&mut app, crossterm::event::KeyCode::Tab);
+    assert_eq!(app.command, "mkdir ");
+}
+
+#[test]
+fn command_completion_row_lists_matches_and_no_match_marker() {
+    let mut app = test_app();
+    press(&mut app, crossterm::event::KeyCode::Char(':'));
+    type_str(&mut app, "l");
+    let out = render_app(&app, 110, 30);
+    let hint = out.lines().nth_back(1).unwrap_or_default();
+    let footer = out.lines().last().unwrap_or_default();
+    assert!(hint.contains("ls"), "completion row missing ls: {hint:?}");
+    assert!(hint.contains("load"), "completion row missing load: {hint:?}");
+    assert!(footer.contains(":l"), "command input missing from footer: {footer:?}");
+
+    type_str(&mut app, "zz");
+    let out = render_app(&app, 110, 30);
+    let hint = out.lines().nth_back(1).unwrap_or_default();
+    assert!(
+        hint.contains("✗ no matching command"),
+        "no-match marker missing: {hint:?}"
+    );
+}
+
+#[test]
+fn command_history_recalls_and_clears_with_arrows() {
+    let mut app = test_app();
+    press(&mut app, crossterm::event::KeyCode::Char(':'));
+    type_str(&mut app, "panel bench");
+    press(&mut app, crossterm::event::KeyCode::Enter);
+    assert_eq!(app.panel, Panel::Bench);
+    assert_eq!(app.command_history, vec!["panel bench".to_string()]);
+
+    press(&mut app, crossterm::event::KeyCode::Char(':'));
+    press(&mut app, crossterm::event::KeyCode::Up);
+    assert_eq!(app.command, "panel bench");
+    // At the oldest entry ↑ stays put.
+    press(&mut app, crossterm::event::KeyCode::Up);
+    assert_eq!(app.command, "panel bench");
+    // ↓ past the newest entry returns an empty prompt.
+    press(&mut app, crossterm::event::KeyCode::Down);
+    assert!(app.command.is_empty());
+}
+
+#[test]
+fn command_history_keeps_the_latest_twenty_entries() {
+    let mut app = test_app();
+    for _ in 0..21 {
+        press(&mut app, crossterm::event::KeyCode::Char(':'));
+        type_str(&mut app, "panel bench");
+        press(&mut app, crossterm::event::KeyCode::Enter);
+    }
+    assert_eq!(app.command_history.len(), 20);
+    assert!(app.command_history.iter().all(|c| c == "panel bench"));
+}
+
+#[test]
+fn escape_leaves_the_command_prompt_without_history_noise() {
+    let mut app = test_app();
+    press(&mut app, crossterm::event::KeyCode::Char(':'));
+    type_str(&mut app, "ls");
+    press(&mut app, crossterm::event::KeyCode::Esc);
+    assert_eq!(app.mode, crate::app::InputMode::Normal);
+    assert!(app.command.is_empty());
+    assert!(app.command_history.is_empty());
+}
+
 // ---------------------------------------------------------------- pure helpers
 
 #[test]

@@ -2356,17 +2356,67 @@ impl App {
             KeyCode::Esc => {
                 self.mode = InputMode::Normal;
                 self.command.clear();
+                self.command_history_pos = None;
             }
             KeyCode::Enter => {
                 let line = std::mem::take(&mut self.command);
                 self.mode = InputMode::Normal;
+                self.command_history_pos = None;
+                if !line.trim().is_empty() {
+                    self.command_history.push(line.clone());
+                    if self.command_history.len() > 20 {
+                        self.command_history.remove(0);
+                    }
+                }
                 self.execute_command(&line);
             }
+            KeyCode::Tab => self.complete_command(),
+            KeyCode::Up => self.command_history_prev(),
+            KeyCode::Down => self.command_history_next(),
             KeyCode::Backspace => {
                 self.command.pop();
+                self.command_history_pos = None;
             }
-            KeyCode::Char(c) => self.command.push(c),
+            KeyCode::Char(c) => {
+                self.command.push(c);
+                self.command_history_pos = None;
+            }
             _ => {}
+        }
+    }
+
+    /// Tab completes to the first prefix match, adding the trailing space so
+    /// the next keystroke starts on arguments.
+    fn complete_command(&mut self) {
+        if let Some(first) = matching_commands(&self.command).first() {
+            self.command = format!("{first} ");
+        }
+    }
+
+    fn command_history_prev(&mut self) {
+        if self.command_history.is_empty() {
+            return;
+        }
+        let pos = match self.command_history_pos {
+            Some(0) => 0,
+            Some(i) => i - 1,
+            None => self.command_history.len() - 1,
+        };
+        self.command_history_pos = Some(pos);
+        self.command = self.command_history[pos].clone();
+    }
+
+    fn command_history_next(&mut self) {
+        let Some(pos) = self.command_history_pos else {
+            return;
+        };
+        if pos + 1 < self.command_history.len() {
+            self.command_history_pos = Some(pos + 1);
+            self.command = self.command_history[pos + 1].clone();
+        } else {
+            // Walking past the newest entry returns to an empty prompt.
+            self.command_history_pos = None;
+            self.command.clear();
         }
     }
 
