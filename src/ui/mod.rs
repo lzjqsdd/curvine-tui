@@ -34,7 +34,7 @@ pub fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // header: identity + inline cluster badge
+            Constraint::Length(1), // header: panel menu + cluster badge
             Constraint::Min(3),    // main area
             Constraint::Length(command_hint), // command completions
             Constraint::Length(1), // footer: status badge + hints
@@ -98,43 +98,59 @@ pub fn render(f: &mut Frame, app: &App) {
     }
 }
 
-/// Context header: identity + panel on the left, the cluster state as an
-/// inline badge, and navigation hints on the right. It is a single row because
-/// a badge is exactly text-height.
-fn render_header(f: &mut Frame, app: &App, area: Rect) {
-    if area.height == 0 {
-        return;
+/// How much of each tab the header draws. The menu degrades one step at a
+/// time so the panel number is the last thing to go, never the cluster pill.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabDetail {
+    Label,
+    Icon,
+    Number,
+}
+
+impl TabDetail {
+    /// Richest first: short label, then icon, then the bare number.
+    const TIERS: [TabDetail; 3] = [TabDetail::Label, TabDetail::Icon, TabDetail::Number];
+
+    fn text(self, panel: Panel, number: usize) -> String {
+        match self {
+            TabDetail::Label => format!(" {number} {} {} ", panel.icon(), panel.short_title()),
+            TabDetail::Icon => format!(" {number} {} ", panel.icon()),
+            TabDetail::Number => format!(" {number} "),
+        }
     }
-    let row = Rect {
-        y: area.y + area.height.saturating_sub(1) / 2,
-        height: 1,
-        ..area
-    };
 
-    let identity = vec![
-        Span::styled(
-            " ❖ curvine-tui",
-            Style::default()
-                .fg(th::ACCENT)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("  ·  ", Style::default().fg(th::BORDER)),
-        Span::styled(
-            format!(" {} {}", app.panel.icon(), app.panel.title()),
-            Style::default()
-                .fg(th::ACCENT)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ];
-    let identity_w: usize = identity.iter().map(|s| s.content.chars().count()).sum();
-    f.render_widget(
-        Paragraph::new(Line::from(identity)),
-        Rect {
-            width: (identity_w as u16).min(area.width),
-            ..row
-        },
-    );
+    fn width(self) -> usize {
+        Panel::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, p)| self.text(*p, i + 1).chars().count())
+            .sum()
+    }
 
+    /// Widest tier that fits in `width`. If even the numbers are too wide the
+    /// caller clips them: losing a panel from the menu is worse than clipping.
+    fn fit(width: u16) -> TabDetail {
+        Self::TIERS
+            .into_iter()
+            .find(|tier| tier.width() <= width as usize)
+            .unwrap_or(TabDetail::Number)
+    }
+}
+
+/// Active tab: accent ink on a subtle fill. Inactive tabs are muted.
+fn tab_style(active: bool) -> Style {
+    if active {
+        Style::default()
+            .fg(th::ACCENT)
+            .bg(th::TAB_BG)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(th::MUTED)
+    }
+}
+
+/// Text and tone for the cluster pill in the header's right corner.
+fn cluster_badge(app: &App) -> (String, Tone) {
     let (dot_glyph, cluster_text, tone) = match (&app.cluster.data, &app.cluster.error) {
         (Some(c), _) => {
             let tone = if c.workers.is_empty() {
@@ -168,43 +184,65 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         .map(|c| c.workers.len())
         .unwrap_or(0);
     let worker_word = if workers == 1 { "worker" } else { "workers" };
-    let badge = format!(
-        "{dot_glyph} {cluster_text} · {workers} {worker_word} · ↻{}s",
-        app.refresh_countdown_secs()
+    (
+        format!(
+            "{dot_glyph} {cluster_text} · {workers} {worker_word} · ↻{}s",
+            app.refresh_countdown_secs()
+        ),
+        tone,
+    )
+}
+
+/// One-line, borderless menu header: a tab per panel on the left and the
+/// cluster pill on the right.
+///
+/// The tab group degrades (`n icon short` -> `n icon` -> `n`) against the width
+/// left over after the pill is placed, never the other way round: the pill
+/// carries cluster health, so it always keeps its cells.
+fn render_header(f: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let row = Rect {
+        y: area.y + area.height.saturating_sub(1) / 2,
+        height: 1,
+        ..area
+    };
+
+    let (badge, tone) = cluster_badge(app);
+    let badge_w = components::pill_width(&badge).min(area.width);
+    let badge_x = area.right().saturating_sub(badge_w);
+
+    // Keep one empty cell between the menu and the pill whenever there is room.
+    let gap = u16::from(badge_x > area.x);
+    let tabs_w = badge_x.saturating_sub(area.x).saturating_sub(gap);
+    let detail = TabDetail::fit(tabs_w);
+    let tabs: Vec<Span> = Panel::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, panel)| {
+            Span::styled(
+                detail.text(*panel, i + 1),
+                tab_style(*panel == app.panel),
+            )
+        })
+        .collect();
+
+    f.render_widget(
+        Paragraph::new(Line::from(tabs)),
+        Rect {
+            width: tabs_w,
+            ..row
+        },
     );
-
-    // Left group: identity then the cluster badge, one cell apart. Right group:
-    // the shortcut hint. Everything between them stays empty.
-    let hints = "1-8 switch  ·  : command";
-    let hints_w = hints.chars().count() as u16;
-    let badge_w = components::pill_width(&badge);
-    let identity_w = identity_w.min(area.width as usize) as u16;
-    let badge_x = identity_w.saturating_add(1);
-    let left_w = badge_x.saturating_add(badge_w);
-
-    let hints_fit = area.width > hints_w && area.right().saturating_sub(hints_w) > left_w + 1;
-    if hints_fit {
-        f.render_widget(
-            Paragraph::new(Span::styled(hints, Style::default().fg(th::MUTED))),
-            Rect {
-                x: area.right() - hints_w,
-                width: hints_w,
-                ..row
-            },
-        );
-    }
-
-    if left_w <= area.width {
-        f.render_widget(
-            Paragraph::new(components::badge(badge, tone)),
-            Rect {
-                x: badge_x,
-                y: row.y,
-                width: badge_w,
-                height: 1,
-            },
-        );
-    }
+    f.render_widget(
+        Paragraph::new(components::badge(badge, tone)),
+        Rect {
+            x: badge_x,
+            width: badge_w,
+            ..row
+        },
+    );
 }
 
 /// The footer merges the status row and the key hints: a success/info status is
@@ -220,7 +258,18 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
         height: 1,
         ..area
     };
-    let hints = footer_hints(app);
+    // Prefer the panel's hints, but never let a long list hide the one global
+    // action the header cannot show once it has degraded: switching panels.
+    let hints = {
+        let full = footer_hints(app);
+        if area.width as usize > full.chars().count() + 8 {
+            full
+        } else if app.mode == InputMode::Normal {
+            GENERIC_HINTS.to_string()
+        } else {
+            full
+        }
+    };
     let hints_w = hints.chars().count() as u16;
     let hints_fit = area.width > hints_w + 8;
     if hints_fit {
@@ -359,6 +408,11 @@ fn render_command_hint(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+/// The shortest footer that still names the global escape hatches. It is the
+/// fallback when a panel's own hints do not fit, so panel switching can never
+/// disappear from the footer just because a panel has many keys.
+const GENERIC_HINTS: &str = "tab/1-8 panels · : cmd · ? help · q quit";
+
 /// Contextual key hints for the footer's right edge.
 fn footer_hints(app: &App) -> String {
     if app.help_visible {
@@ -371,22 +425,23 @@ fn footer_hints(app: &App) -> String {
         InputMode::Transfer => "tab switch  ⏎ transfer  esc cancel".to_string(),
         InputMode::Confirm => "⏎ confirm  esc cancel".to_string(),
         InputMode::Describe => "esc close".to_string(),
-        InputMode::Detail => "esc/q close  1-8 switch".to_string(),
+        InputMode::Detail => "esc/q close  tab/1-8 panels".to_string(),
         InputMode::Menu => "↑↓ move  ⏎ run  esc close".to_string(),
-        InputMode::Normal => match app.panel {
-            Panel::Files => {
-                "space mark  a all  u unmark  x menu  ↑↓ move  ⏎ enter  d detail  / filter".to_string()
-            }
-            Panel::Dashboard => "↑↓ select  d detail  x menu  r refresh  ? help".to_string(),
-            Panel::Nodes => "↑↓ select  d detail  x menu  r refresh  ? help".to_string(),
-            Panel::Mounts => "↑↓ select  n new  u unmount  x menu  r refresh  ? help".to_string(),
-            Panel::Jobs => "↑↓ select  c cancel  x menu  r refresh  ? help".to_string(),
-            Panel::Transfers => {
-                "↑↓ select  Del cancel  c clear  p put  g get  x menu".to_string()
-            }
-            Panel::Fsck => "↑↓ select  ⏎ detail  s scan  f target  x menu".to_string(),
-            Panel::Bench => "b run  p profile  t threads  d duration  x menu".to_string(),
-        },
+        InputMode::Normal => {
+            let panel_hints = match app.panel {
+                Panel::Files => {
+                    "space mark  a all  u unmark  x menu  ↑↓ move  ⏎ enter  d detail  / filter"
+                }
+                Panel::Dashboard => "↑↓ select  d detail  x menu  r refresh  ? help",
+                Panel::Nodes => "↑↓ select  d detail  x menu  r refresh  ? help",
+                Panel::Mounts => "↑↓ select  n new  u unmount  x menu  r refresh  ? help",
+                Panel::Jobs => "↑↓ select  c cancel  x menu  r refresh  ? help",
+                Panel::Transfers => "↑↓ select  Del cancel  c clear  p put  g get  x menu",
+                Panel::Fsck => "↑↓ select  ⏎ detail  s scan  f target  x menu",
+                Panel::Bench => "b run  p profile  t threads  d duration  x menu",
+            };
+            format!("{panel_hints}  ·  tab/1-8 panels")
+        }
     }
 }
 

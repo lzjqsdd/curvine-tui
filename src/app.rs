@@ -53,9 +53,23 @@ impl Panel {
         }
     }
 
-    /// Nerd Font glyph used in the context header.
+    /// Nerd Font glyph used in the header's panel menu.
     pub fn icon(self) -> &'static str {
         crate::ui::icons::for_panel(self)
+    }
+
+    /// Compact label used when the header menu cannot fit full titles.
+    pub fn short_title(self) -> &'static str {
+        match self {
+            Panel::Dashboard => "Dash",
+            Panel::Files => "Files",
+            Panel::Nodes => "Nodes",
+            Panel::Mounts => "Mounts",
+            Panel::Jobs => "Jobs",
+            Panel::Transfers => "Xfer",
+            Panel::Fsck => "Fsck",
+            Panel::Bench => "Bench",
+        }
     }
 
     pub fn index(self) -> usize {

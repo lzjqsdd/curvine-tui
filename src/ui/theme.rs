@@ -13,6 +13,9 @@ pub const TEXT: Color = Color::Rgb(226, 232, 240);
 pub const DIR: Color = Color::Rgb(125, 211, 252);
 pub const INFO: Color = Color::Rgb(147, 197, 253);
 pub const SELECTED_BG: Color = Color::Rgb(38, 46, 58);
+/// Underlay for the active tab in the header menu. Subtle by design: the accent
+/// text and bold weight carry the selection, the fill only anchors it.
+pub const TAB_BG: Color = Color::Rgb(30, 44, 48);
 
 /// The dark page the palette assumes. Inline badge caps use it as their
 /// foreground so the tone-filled half-circles read as rounded ends.

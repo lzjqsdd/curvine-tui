@@ -293,11 +293,7 @@ fn renders_every_panel_with_data_at_common_sizes() {
     for panel in Panel::ALL {
         for (w, h) in sizes {
             let out = render_panel(panel, w, h, true);
-            assert!(
-                out.contains(panel.title()),
-                "panel {:?} title missing at {w}x{h}",
-                panel
-            );
+            assert_panel_tab(&out, panel);
         }
     }
 }
@@ -306,11 +302,7 @@ fn renders_every_panel_with_data_at_common_sizes() {
 fn renders_every_panel_while_loading_and_empty() {
     for panel in Panel::ALL {
         let out = render_panel(panel, 100, 30, false);
-        assert!(
-            out.contains(panel.title()),
-            "panel {:?} title missing when empty",
-            panel
-        );
+        assert_panel_tab(&out, panel);
     }
 }
 
@@ -340,20 +332,73 @@ fn renders_at_pathological_sizes_without_panicking() {
 }
 
 #[test]
-fn header_identifies_the_active_panel_at_narrow_widths() {
-    // The tab strip is gone; the active panel now lives in the one-line
-    // context header and must never be the part that gets dropped.
-    let last = *Panel::ALL.last().unwrap();
-    for width in [40u16, 60, 80, 100, 120] {
-        let out = render_panel(last, width, 30, false);
-        let header = srow(&out, "❖ curvine-tui");
+fn header_menu_keeps_every_panel_number_at_narrow_widths() {
+    // The menu degrades instead of dropping panels, and the cluster pill keeps
+    // its cells throughout: all eight numbers must survive at these widths.
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    for width in [80u16, 90, 100, 118] {
+        let out = render_app(&app, width, 30);
+        let header = header_row(&out);
+        let tokens = header_tokens(header);
+        for n in 1..=Panel::ALL.len() {
+            let number = n.to_string();
+            assert!(
+                tokens.contains(&number.as_str()),
+                "panel {n} missing from the menu at width {width}: {header:?}"
+            );
+        }
+        assert!(header.contains('◖') && header.contains('◗'), "pill clipped at width {width}: {header:?}");
+        assert!(header.contains("master-1:8995"), "master missing at width {width}: {header:?}");
+        assert!(header.contains("1 worker"), "worker count missing at width {width}: {header:?}");
+        assert!(header.contains('↻'), "refresh countdown missing at width {width}: {header:?}");
+    }
+}
+
+#[test]
+fn header_menu_degrades_from_labels_to_icons_to_numbers() {
+    let mut app = test_app();
+    app.panel = Panel::Dashboard;
+    populate_sample_data(&mut app);
+
+    // Wide: number + icon + short title for every panel.
+    let out = render_app(&app, 160, 30);
+    let header = header_row(&out);
+    for (i, panel) in Panel::ALL.iter().enumerate() {
+        let label = format!(" {} {} {} ", i + 1, panel.icon(), panel.short_title());
         assert!(
-            header.contains("❖ curvine-tui"),
-            "identity missing from header at width {width}: {header:?}"
+            header.contains(&label),
+            "full tab {label:?} missing at width 160: {header:?}"
         );
+    }
+
+    // Medium: icons and numbers, labels dropped.
+    let out = render_app(&app, 80, 30);
+    let header = header_row(&out);
+    assert!(!header.contains("Dash"), "labels should be gone at 80: {header:?}");
+    for panel in Panel::ALL {
         assert!(
-            header.contains(last.title()),
-            "active panel missing from header at width {width}: {header:?}"
+            header.contains(panel.icon()),
+            "icon for {panel:?} missing at width 80: {header:?}"
+        );
+    }
+
+    // Narrow: numbers only. Without cluster data the pill is 36 cells, which
+    // leaves just enough room at 64 for the eight numbered tabs.
+    let bare = test_app();
+    let out = render_app(&bare, 64, 30);
+    let header = header_row(&out);
+    assert!(
+        !header.contains(Panel::Dashboard.icon()),
+        "icons should be gone at 64: {header:?}"
+    );
+    let tokens = header_tokens(header);
+    for n in 1..=Panel::ALL.len() {
+        let number = n.to_string();
+        assert!(
+            tokens.contains(&number.as_str()),
+            "panel {n} missing from the number-only menu: {header:?}"
         );
     }
 }
@@ -577,6 +622,42 @@ fn render_app(app: &App, w: u16, h: u16) -> String {
     let mut term = Terminal::new(backend).unwrap();
     term.draw(|f| crate::ui::render(f, app)).unwrap();
     buffer_text(&term)
+}
+
+fn render_buffer(app: &App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+    let backend = TestBackend::new(w, h);
+    let mut term = Terminal::new(backend).unwrap();
+    term.draw(|f| crate::ui::render(f, app)).unwrap();
+    term.backend().buffer().clone()
+}
+
+/// The menu header is the first rendered row.
+fn header_row(out: &str) -> &str {
+    out.lines().next().unwrap_or_default()
+}
+
+/// Header cells left of the cluster pill's left cap. The pill is right-aligned,
+/// so everything before it belongs to the panel menu.
+fn header_tabs(header: &str) -> &str {
+    match header.find('◖') {
+        Some(i) => &header[..i],
+        None => header,
+    }
+}
+
+fn header_tokens(header: &str) -> Vec<&str> {
+    header_tabs(header).split_whitespace().collect()
+}
+
+/// The header menu's stable panel identity: the number survives every
+/// degradation tier, so render tests can key off it instead of a full title.
+fn assert_panel_tab(out: &str, panel: Panel) {
+    let header = header_row(out);
+    let number = (panel.index() + 1).to_string();
+    assert!(
+        header_tokens(header).contains(&number.as_str()),
+        "panel {panel:?} tab missing from the menu: {header:?}"
+    );
 }
 
 #[test]
@@ -960,35 +1041,77 @@ fn escape_closes_the_full_screen_detail() {
 }
 
 #[test]
-fn header_shows_the_active_panel_icon_and_context() {
+fn header_shows_the_panel_menu_and_cluster_context() {
     let mut app = test_app();
     app.panel = Panel::Files;
     populate_sample_data(&mut app);
-    let out = render_app(&app, 118, 30);
-    let header = srow(&out, "❖ curvine-tui");
-    assert!(
-        header.contains("❖ curvine-tui"),
-        "product identity missing: {header:?}"
-    );
-    assert!(
-        header.contains(&format!(" {}", app.panel.title())) || header.contains(app.panel.title()),
-        "active panel name missing: {header:?}"
-    );
+    let out = render_app(&app, 160, 30);
+    let header = header_row(&out);
+
+    // Every panel is a tab: number, icon and short title, in Panel::ALL order.
+    for (i, panel) in Panel::ALL.iter().enumerate() {
+        let label = format!(" {} {} {} ", i + 1, panel.icon(), panel.short_title());
+        assert!(
+            header.contains(&label),
+            "menu tab {label:?} missing: {header:?}"
+        );
+    }
+
     // Cluster context: health dot, active master, worker count, refresh timer.
     assert!(header.contains("master-1:8995"), "master missing: {header:?}");
     assert!(header.contains("1 worker"), "worker count missing: {header:?}");
     assert!(header.contains('↻'), "refresh countdown missing: {header:?}");
-    assert!(header.contains("1-8"), "panel shortcut hint missing");
-    assert!(header.contains("command"), "command hint missing");
+
+    // The brand and the old shortcut text no longer live in the header.
+    assert!(!header.contains("curvine-tui"), "brand must leave the header: {header:?}");
+    assert!(!header.contains('❖'), "brand glyph must leave the header: {header:?}");
+    assert!(!header.contains("1-8 switch"), "old shortcut hint still present: {header:?}");
+    assert!(!header.contains(": command"), "old command hint still present: {header:?}");
+}
+
+#[test]
+fn header_highlights_the_active_tab_only() {
+    use ratatui::style::{Color, Modifier};
+
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+
+    let width = 160u16;
+    let buf = render_buffer(&app, width, 30);
+    let row: String = (0..width).map(|x| buf[(x, 0)].symbol()).collect();
+
+    let active = format!(" 2 {} Files ", Panel::Files.icon());
+    let x = row[..row.find(&active).expect("active tab")].chars().count() as u16;
+    let cell = &buf[(x, 0)];
+    assert_eq!(cell.fg, crate::ui::theme::ACCENT, "active tab ink");
+    assert_eq!(cell.bg, crate::ui::theme::TAB_BG, "active tab fill");
+    assert!(
+        cell.modifier.contains(Modifier::BOLD),
+        "active tab must be bold"
+    );
+
+    let inactive = format!(" 1 {} Dash ", Panel::Dashboard.icon());
+    let x = row[..row.find(&inactive).expect("inactive tab")]
+        .chars()
+        .count() as u16;
+    let cell = &buf[(x, 0)];
+    assert_eq!(cell.fg, crate::ui::theme::MUTED, "inactive tab ink");
+    assert_eq!(cell.bg, Color::Reset, "inactive tabs stay unfilled");
+    assert!(!cell.modifier.contains(Modifier::BOLD));
 }
 
 #[test]
 fn header_reports_disconnected_without_cluster_data() {
     let app = test_app();
     let out = render_app(&app, 110, 30);
-    let header = srow(&out, "disconnected");
+    let header = header_row(&out);
     assert!(header.contains("disconnected"), "expected a disconnected state: {header:?}");
     assert!(header.contains(crate::ui::components::DOT_HOLLOW), "expected a hollow dot");
+    assert!(
+        header.contains("· 0 workers ·"),
+        "pill must still carry the worker count: {header:?}"
+    );
 }
 
 #[test]
@@ -1007,6 +1130,32 @@ fn footer_merges_status_and_context_hints() {
     assert!(
         footer.contains('◖') && footer.contains('◗'),
         "status must be wrapped in an inline badge: {footer:?}"
+    );
+}
+
+#[test]
+fn footer_keeps_a_panel_switching_mention() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+
+    // Wide: the panel's own hints carry the switch reminder.
+    let out = render_app(&app, 120, 30);
+    let footer = out.lines().last().unwrap_or_default();
+    assert!(footer.contains("tab/1-8 panels"), "switch hint missing: {footer:?}");
+    assert!(footer.contains("space mark"), "panel hints missing: {footer:?}");
+
+    // Narrow: the long list gives way to the generic line, which still names
+    // the panel switch instead of hiding every hint.
+    let out = render_app(&app, 80, 30);
+    let footer = out.lines().last().unwrap_or_default();
+    assert!(
+        footer.contains("tab/1-8 panels"),
+        "generic footer must keep the switch hint: {footer:?}"
+    );
+    assert!(
+        !footer.contains("space mark"),
+        "the long panel hints should have yielded: {footer:?}"
     );
 }
 
@@ -1158,11 +1307,7 @@ fn rich_controls_survive_narrow_layouts() {
     for panel in Panel::ALL {
         for width in [60u16, 76, 96] {
             let out = render_panel(panel, width, 22, true);
-            assert!(
-                out.contains(panel.title()),
-                "panel {:?} unidentifiable at width {width}",
-                panel
-            );
+            assert_panel_tab(&out, panel);
         }
     }
 }
@@ -2000,10 +2145,10 @@ fn badge_fills_stay_inside_the_caps() {
     use crate::ui::theme as th;
     use ratatui::style::Color;
 
-    // Row selection is the only unbounded filled background. Every other
-    // non-reset background must be a badge fill: one contiguous tone run on a
-    // single row, starting at ◖ and ending at ◗.
-    let allowed = [Color::Reset, th::SELECTED_BG];
+    // Row selection and the active header tab are the only unbounded filled
+    // backgrounds. Every other non-reset background must be a badge fill: one
+    // contiguous tone run on a single row, starting at ◖ and ending at ◗.
+    let allowed = [Color::Reset, th::SELECTED_BG, th::TAB_BG];
     let tones = [th::MUTED, th::ACCENT, th::OK, th::WARN, th::ERROR, th::DIR];
     let scan = |app: &App, w: u16, h: u16| -> Vec<(u16, u16, Color)> {
         let backend = TestBackend::new(w, h);
@@ -2068,46 +2213,61 @@ fn badge_fills_stay_inside_the_caps() {
 // ------------------------------------------------------------ review polish
 
 #[test]
-fn header_groups_title_and_cluster_badge_together() {
+fn header_pill_is_right_aligned_and_never_touches_the_tabs() {
     let mut app = test_app();
     app.panel = Panel::Dashboard;
     populate_sample_data(&mut app);
-    let out = render_app(&app, 120, 30);
-    let lines: Vec<&str> = out.lines().collect();
-    let idx = lines
+    let width = 120u16;
+    let out = render_app(&app, width, 30);
+    let header = header_row(&out);
+    let chars: Vec<char> = header.chars().collect();
+    assert_eq!(chars.len(), width as usize);
+
+    let left = chars
         .iter()
-        .position(|l| l.contains("1 worker"))
-        .expect("badge row");
-    let row: Vec<char> = lines[idx].chars().collect();
-    let title_byte = lines[idx].find("Dashboard").expect("title");
-    let title_end = lines[idx][..title_byte].chars().count() + "Dashboard".len();
-    let cap = (title_end..row.len())
-        .find(|i| row[*i] == '◖')
+        .position(|c| *c == '◖')
         .expect("badge left cap");
-    assert!(
-        cap.saturating_sub(title_end) <= 1,
-        "badge must sit next to the title (gap {}):\n{out}",
-        cap.saturating_sub(title_end)
+    let right = chars
+        .iter()
+        .rposition(|c| *c == '◗')
+        .expect("badge right cap");
+    assert_eq!(
+        right,
+        width as usize - 1,
+        "pill must end at the right edge: {header:?}"
     );
-    // The shortcut group stays on the right edge.
-    let hints_byte = lines[idx].find("1-8").expect("shortcut hint");
-    let hints = lines[idx][..hints_byte].chars().count();
-    assert!(hints > row.len() / 2, "shortcuts are not right-aligned: {hints}");
+    let tabs_end = header_tabs(header).trim_end().chars().count();
+    assert!(
+        left > tabs_end,
+        "the pill must not touch the tabs (tabs end {tabs_end}, pill starts {left}):\n{out}"
+    );
 }
 
 #[test]
-fn header_is_a_single_row() {
+fn header_is_a_single_row_of_tabs_and_pill() {
     let mut app = test_app();
     app.panel = Panel::Dashboard;
     populate_sample_data(&mut app);
     let out = render_app(&app, 120, 30);
     let lines: Vec<&str> = out.lines().collect();
+    let header = lines[0];
+    let tokens = header_tokens(header);
+    for n in 1..=Panel::ALL.len() {
+        let number = n.to_string();
+        assert!(
+            tokens.contains(&number.as_str()),
+            "panel {n} tab missing: {header:?}"
+        );
+    }
+    assert!(header.contains("1 worker"), "cluster pill missing: {header:?}");
     assert!(
-        lines[0].contains("❖ curvine-tui") && lines[0].contains("1 worker"),
-        "header is not one row: {:?}",
-        lines[0]
+        !header.contains("curvine-tui"),
+        "brand must leave the header: {header:?}"
     );
-    assert!(lines[0].contains("1-8 switch"), "hints left the header row");
+    assert!(
+        !header.contains('❖'),
+        "brand glyph must leave the header: {header:?}"
+    );
     // The main area starts immediately on the next row: no empty band.
     assert!(
         lines[1].starts_with('╭'),
@@ -2806,4 +2966,5 @@ fn help_popup_reports_the_real_panel_count() {
         "help must state the actual panel count:\n{out}"
     );
 }
+
 

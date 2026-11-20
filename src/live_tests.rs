@@ -287,14 +287,19 @@ fn live_header_files_and_menus_work_against_the_cluster() {
         "cluster/listing did not load"
     );
 
-    // Header: identity, cluster endpoint, live worker count, refresh timer.
-    // The band is a single row.
+    // Header: the panel menu and the cluster pill share the single top row.
+    // The brand lives in the help popup, not here.
     let out = live.render(120, 30);
-    let header = out
-        .lines()
-        .find(|l| l.contains("curvine-tui"))
-        .unwrap_or_default();
-    assert!(header.contains("curvine-tui"), "header: {header:?}");
+    let header = out.lines().next().unwrap_or_default();
+    let tabs = header.split('◖').next().unwrap_or_default();
+    for n in 1..=Panel::ALL.len() {
+        let number = n.to_string();
+        assert!(
+            tabs.split_whitespace().any(|t| t == number),
+            "panel {n} missing from the header menu: {header:?}"
+        );
+    }
+    assert!(!header.contains("curvine-tui"), "header: {header:?}");
     assert!(header.contains("worker"), "header: {header:?}");
     assert!(header.contains('↻'), "header: {header:?}");
     assert!(
