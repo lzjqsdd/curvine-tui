@@ -49,8 +49,8 @@ fn render_verdict(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    // Non-gauge states carry a badge, so they use a pill plus plain text.
-    let (badge, tone, detail) = if app.fsck.loading {
+    // Non-gauge states carry an inline badge plus plain text.
+    let (badge_text, tone, detail) = if app.fsck.loading {
         (
             format!("{} scanning", components::live_spinner()),
             Tone::Accent,
@@ -65,23 +65,25 @@ fn render_verdict(f: &mut Frame, app: &App, area: Rect) {
             "press enter to scan · f targets the browsed directory".to_string(),
         )
     };
-    let pill_rect = components::pill(
-        f,
+    let badge_w = components::pill_width(&badge_text).min(area.width.saturating_sub(2));
+    let row_y = area.y + area.height.saturating_sub(1) / 2;
+    f.render_widget(
+        Paragraph::new(components::badge(badge_text, tone)),
         Rect {
             x: area.x + 1,
-            width: area.width.saturating_sub(2),
-            ..area
+            y: row_y,
+            width: badge_w,
+            height: 1,
         },
-        badge,
-        tone,
     );
-    if area.height >= 3 {
+    if area.height > 0 {
+        let x = area.x + 1 + badge_w + 2;
         f.render_widget(
             Paragraph::new(Span::styled(detail, Style::default().fg(th::MUTED))),
             Rect {
-                x: pill_rect.right().saturating_add(2),
-                y: area.y + 1,
-                width: area.right().saturating_sub(pill_rect.right() + 2),
+                x,
+                y: row_y,
+                width: area.right().saturating_sub(x),
                 height: 1,
             },
         );

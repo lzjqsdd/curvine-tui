@@ -21,9 +21,9 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // breadcrumb band (badges are pills)
+            Constraint::Length(3), // breadcrumb band
             Constraint::Min(4),    // listing
-            Constraint::Length(3), // selected entry band (badges are pills)
+            Constraint::Length(3), // selected entry band
         ])
         .split(area);
 
@@ -36,8 +36,8 @@ fn render_breadcrumb(f: &mut Frame, app: &App, area: Rect) {
     if area.height == 0 {
         return;
     }
-    // Status badges on the right, path on the left; both share the middle row
-    // of the band so the pills' borders stay clear of each other.
+    // Status badges on the right, path on the left; both share the band's
+    // middle row, and `badges_end` leaves a gap between the groups.
     let mut right: Vec<(String, Tone)> = Vec::new();
     if !app.files.filter.is_empty() {
         right.push((format!("filter {}", app.files.filter), Tone::Warn));
@@ -55,7 +55,7 @@ fn render_breadcrumb(f: &mut Frame, app: &App, area: Rect) {
         ));
     }
     let right_w = components::pills_width(&right);
-    components::pills_end(f, area, &right);
+    components::badges_end(f, area, &right);
 
     let mut spans = vec![
         Span::raw(" "),
@@ -290,18 +290,19 @@ fn render_detail(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    // The type is a badge, so it is a pill; the rest of the row is plain text.
+    // The type is an inline badge; the rest of the row is plain text.
     let kind = if e.is_dir { "directory" } else { "file" };
     let kind_tone = if e.is_dir { Tone::Info } else { Tone::Neutral };
-    let pill_rect = components::pill(
-        f,
+    let badge_w = components::pill_width(kind).min(area.width.saturating_sub(1));
+    let row_y = area.y + area.height.saturating_sub(1) / 2;
+    f.render_widget(
+        Paragraph::new(components::badge(kind, kind_tone)),
         Rect {
             x: area.x + 1,
-            width: area.width.saturating_sub(1),
-            ..area
+            y: row_y,
+            width: badge_w,
+            height: 1,
         },
-        kind,
-        kind_tone,
     );
 
     let size_ratio = if e.is_dir || e.len == 0 {
@@ -358,7 +359,7 @@ fn render_detail(f: &mut Frame, app: &App, area: Rect) {
     }
     let hint = "x menu ".to_string();
     let hint_w = hint.chars().count() as u16;
-    let details_x = pill_rect.right().saturating_add(1);
+    let details_x = area.x + 1 + badge_w + 1;
     let avail = area
         .right()
         .saturating_sub(details_x)
@@ -368,7 +369,7 @@ fn render_detail(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(Line::from(spans)),
         Rect {
             x: details_x,
-            y: area.y + area.height.saturating_sub(1) / 2,
+            y: row_y,
             width: avail,
             height: 1,
         },
@@ -377,7 +378,7 @@ fn render_detail(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(Span::styled(hint, Style::default().fg(th::BORDER))),
         Rect {
             x: area.right().saturating_sub(hint_w),
-            y: area.y + area.height.saturating_sub(1) / 2,
+            y: row_y,
             width: hint_w,
             height: 1,
         },

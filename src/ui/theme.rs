@@ -14,6 +14,12 @@ pub const DIR: Color = Color::Rgb(125, 211, 252);
 pub const INFO: Color = Color::Rgb(147, 197, 253);
 pub const SELECTED_BG: Color = Color::Rgb(38, 46, 58);
 
+/// The dark page the palette assumes. Inline badge caps use it as their
+/// foreground so the tone-filled half-circles read as rounded ends.
+pub const PAGE: Color = Color::Rgb(15, 17, 21);
+/// Dark ink for text drawn on a tone-filled badge.
+pub const INK: Color = Color::Rgb(22, 24, 28);
+
 /// Colour for a usage bar based on how full it is.
 #[allow(dead_code)]
 pub fn usage_color(ratio: f64) -> Color {

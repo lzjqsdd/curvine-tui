@@ -156,7 +156,7 @@ fn render_selected(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    // Pills for the mount identity, then the UFS side as plain text.
+    // Badges for the mount identity, then the UFS side as plain text.
     let mut items: Vec<(String, Tone)> = vec![
         (m.cv_path.clone(), Tone::Info),
         (format!("id {}", m.mount_id), Tone::Neutral),
@@ -175,8 +175,8 @@ fn render_selected(f: &mut Frame, app: &App, area: Rect) {
     if !m.storage_type.is_empty() {
         items.push((m.storage_type.clone(), Tone::Accent));
     }
-    let used = components::pills(f, area, &items);
-    let mid = Rect {
+    let used = components::badges(f, area, &items);
+    let row = Rect {
         y: area.y + area.height.saturating_sub(1) / 2,
         height: 1,
         x: used,
@@ -190,7 +190,7 @@ fn render_selected(f: &mut Frame, app: &App, area: Rect) {
             components::dot(Tone::Ok),
             Span::styled(" mounted", Style::default().fg(th::MUTED)),
         ])),
-        mid,
+        row,
     );
 }
 

@@ -29,22 +29,21 @@ pub fn panel_block(title: &str) -> Block<'static> {
         ))
 }
 
-/// Like `panel_block`, but the title carries a trailing badge.
-pub fn panel_block_badged(title: &str, badge: Tag) -> Block<'static> {
+/// Like `panel_block`, but the title carries a trailing inline badge.
+pub fn panel_block_badged(title: &str, tag: Tag) -> Block<'static> {
+    let mut spans = vec![Span::styled(
+        format!(" {title} "),
+        Style::default()
+            .fg(th::ACCENT_DIM)
+            .add_modifier(Modifier::BOLD),
+    )];
+    spans.extend(badge(tag.text, tag.tone).spans);
+    spans.push(Span::raw(" "));
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(th::BORDER))
-        .title(Line::from(vec![
-            Span::styled(
-                format!(" {title} "),
-                Style::default()
-                    .fg(th::ACCENT_DIM)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            badge.span(),
-            Span::raw(" "),
-        ]))
+        .title(Line::from(spans))
 }
 
 // ---------------------------------------------------------------------- tags
@@ -76,8 +75,9 @@ impl Tone {
 /// Inline label: coloured bold text with one cell of breathing room.
 ///
 /// There is deliberately no filled variant. A solid background can only be
-/// rectangular, and this UI draws every badge as a rounded pill instead; see
-/// [`pill`]. Table cells use [`Tag::cell`], which never carries a background.
+/// rectangular, and this UI draws every standalone badge as an inline
+/// [`badge`] instead. Table cells use [`Tag::cell`], which never carries a
+/// background.
 #[derive(Debug, Clone)]
 pub struct Tag {
     pub text: String,
@@ -112,106 +112,92 @@ impl Tag {
     }
 }
 
-// ---------------------------------------------------------------------- pills
+// --------------------------------------------------------------------- badges
 
-/// Width a pill needs: two rounded borders plus one cell of padding each side.
+/// Left cap of an inline badge.
+pub const BADGE_LEFT: &str = "◖";
+/// Right cap of an inline badge.
+pub const BADGE_RIGHT: &str = "◗";
+
+/// Width a badge needs: two caps plus one cell of padding each side.
+///
+/// Kept under its historical name so width math at call sites stays put.
 pub fn pill_width(text: &str) -> u16 {
     text.chars().count() as u16 + 4
 }
 
-/// Total width of a row of pills, including the single-cell gaps.
+/// Total width of a row of badges, including the single-cell gaps.
 pub fn pills_width(items: &[(String, Tone)]) -> u16 {
     let inner: u16 = items.iter().map(|(t, _)| pill_width(t)).sum();
     inner + items.len().saturating_sub(1) as u16
 }
 
-/// The styled content line a pill carries. This is the `Line`-returning
-/// variant: [`pill`] wraps it in the rounded border, and callers that need to
-/// compose a badge row by hand can reuse exactly the same content style.
-#[allow(dead_code)] // documented Line-returning API for composing badge rows
-pub fn pill_content(text: impl Into<String>, tone: Tone) -> Line<'static> {
-    pill_content_colored(text, tone.color())
-}
-
-/// Colour-explicit variant of [`pill_content`], used by the status pill so its
-/// border and text can fade smoothly instead of snapping between tones.
-pub fn pill_content_colored(text: impl Into<String>, color: Color) -> Line<'static> {
-    Line::from(Span::styled(
-        format!(" {} ", text.into()),
-        Style::default().fg(color).add_modifier(Modifier::BOLD),
-    ))
-}
-
-/// Draw a rounded badge ("pill") filling `area`.
+/// A one-line, text-height badge: `◖ text ◗`.
 ///
-/// A one-line rounded box needs three rows: top border, content, bottom border.
-/// When `area` is shorter than that (pathological terminals), the same content
-/// is drawn as plain coloured text so a badge can never degrade into the solid
-/// rectangular block this style exists to remove.
-pub fn pill(f: &mut Frame, area: Rect, text: impl Into<String>, tone: Tone) -> Rect {
-    pill_colored(f, area, text, tone.color())
+/// The caps are glyphs, not borders, so the badge occupies exactly one row and
+/// its background is only as wide as its own text. The caps use the page colour
+/// as their foreground and the tone as their background, which turns the
+/// half-circles into the rounded ends of the fill. The middle carries dark ink
+/// on the same tone.
+pub fn badge(text: impl Into<String>, tone: Tone) -> Line<'static> {
+    badge_colored(text, tone.color())
 }
 
-/// [`pill`] with an explicit colour, so animated borders (the status fade) can
-/// interpolate instead of switching palette entries.
-pub fn pill_colored(f: &mut Frame, area: Rect, text: impl Into<String>, color: Color) -> Rect {
-    let text = text.into();
-    let width = pill_width(&text).min(area.width);
-    let rect = Rect {
-        x: area.x,
-        y: area.y,
-        width,
-        height: area.height.min(3),
-    };
-    if rect.width < 3 || rect.height == 0 {
-        return rect;
-    }
-    if rect.height < 3 {
-        f.render_widget(
-            Paragraph::new(pill_content_colored(text, color)),
-            Rect {
-                height: 1,
-                ..rect
-            },
-        );
-        return rect;
-    }
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(color));
-    f.render_widget(
-        Paragraph::new(pill_content_colored(text, color)).block(block),
-        rect,
-    );
-    rect
+/// [`badge`] with an explicit colour, used by the footer status so its fill can
+/// fade smoothly instead of snapping between palette entries.
+pub fn badge_colored(text: impl Into<String>, color: Color) -> Line<'static> {
+    let cap = Style::default().fg(th::PAGE).bg(color);
+    let middle = Style::default()
+        .fg(th::INK)
+        .bg(color)
+        .add_modifier(Modifier::BOLD);
+    Line::from(vec![
+        Span::styled(BADGE_LEFT, cap),
+        Span::styled(format!(" {} ", text.into()), middle),
+        Span::styled(BADGE_RIGHT, cap),
+    ])
 }
 
-/// Render pills left to right inside `area`, one cell apart. Returns the x
-/// coordinate just past the last pill (or `area.right()` when clipped).
-pub fn pills(f: &mut Frame, area: Rect, items: &[(String, Tone)]) -> u16 {
-    let mut x = area.x;
-    for (text, tone) in items {
-        if x >= area.right() {
-            break;
+/// One line holding `items` as inline badges, separated by one cell.
+fn badge_row(items: &[(String, Tone)]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (idx, (text, tone)) in items.iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::raw(" "));
         }
-        let slot = Rect {
-            x,
-            y: area.y,
-            width: area.right().saturating_sub(x),
-            height: area.height,
-        };
-        let used = pill(f, slot, text.clone(), *tone);
-        x = used.right().saturating_add(1);
+        spans.extend(badge(text.clone(), *tone).spans);
     }
-    x
+    Line::from(spans)
 }
 
-/// Right-align a row of pills within `area`.
-pub fn pills_end(f: &mut Frame, area: Rect, items: &[(String, Tone)]) -> u16 {
+/// Render a row of badges left to right inside `area`, one cell apart. The row
+/// is vertically centred, so a one-row band and a taller strip both work.
+/// Returns the x coordinate one cell past the last badge (or `area.right()`
+/// when clipped), leaving room for plain text that follows the row.
+pub fn badges(f: &mut Frame, area: Rect, items: &[(String, Tone)]) -> u16 {
+    if area.height == 0 || items.is_empty() {
+        return area.x;
+    }
+    let y = area.y + area.height.saturating_sub(1) / 2;
+    f.render_widget(
+        Paragraph::new(badge_row(items)),
+        Rect {
+            y,
+            height: 1,
+            ..area
+        },
+    );
+    area.x
+        .saturating_add(pills_width(items))
+        .saturating_add(1)
+        .min(area.right())
+}
+
+/// Right-align a row of badges within `area`.
+pub fn badges_end(f: &mut Frame, area: Rect, items: &[(String, Tone)]) -> u16 {
     let total = pills_width(items);
     let start = area.right().saturating_sub(total).max(area.x);
-    pills(
+    badges(
         f,
         Rect {
             x: start,
@@ -524,24 +510,19 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
-    // Title and the panel-count pill share one three-row band; the pill is the
-    // badge, the product name stays plain text beside it.
-    let band_h = inner.height.min(3);
-    let band = Rect {
+    // Title and the panel-count badge share one text-height row; the badge is
+    // the label, the product name stays plain text beside it.
+    let band_h = inner.height.min(1);
+    let badge_text = format!("{} panels", crate::app::Panel::ALL.len());
+    let badge_w = pill_width(&badge_text).min(inner.width.saturating_sub(1));
+    let badge_rect = Rect {
+        x: inner.x + 1,
+        y: inner.y,
+        width: badge_w,
         height: band_h,
-        ..inner
     };
-    let pill_rect = pill(
-        f,
-        Rect {
-            x: inner.x + 1,
-            width: inner.width.saturating_sub(1),
-            ..band
-        },
-        format!("{} panels", crate::app::Panel::ALL.len()),
-        Tone::Accent,
-    );
-    if band_h >= 3 {
+    f.render_widget(Paragraph::new(badge(badge_text, Tone::Accent)), badge_rect);
+    if band_h >= 1 {
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
@@ -553,9 +534,9 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
                 Span::styled("  contextual actions", Style::default().fg(th::MUTED)),
             ])),
             Rect {
-                x: pill_rect.right().saturating_add(1),
-                y: band.y + 1,
-                width: inner.right().saturating_sub(pill_rect.right() + 1),
+                x: badge_rect.right().saturating_add(1),
+                y: inner.y,
+                width: inner.right().saturating_sub(badge_rect.right() + 1),
                 height: 1,
             },
         );
@@ -723,11 +704,11 @@ impl Dialog {
         body += self.notes.len() as u16 * 2; // blank + note
         let mut h = 2; // top + bottom border
         if self.headline.is_some() {
-            h += 3; // rounded pill band
+            h += 1; // inline headline badge
         }
         h += body;
         h += 1; // gap above the footer
-        h += 3; // footer pills
+        h += 1; // footer keycap badges
         h.max(11)
     }
 }
@@ -761,24 +742,24 @@ pub fn render_dialog(f: &mut Frame, area: Rect, dlg: &Dialog) -> Rect {
     let split = ratatui::layout::Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
         .constraints([
-            ratatui::layout::Constraint::Length(if dlg.headline.is_some() { 3 } else { 0 }),
+            ratatui::layout::Constraint::Length(if dlg.headline.is_some() { 1 } else { 0 }),
             ratatui::layout::Constraint::Min(1),
             ratatui::layout::Constraint::Length(1),
-            ratatui::layout::Constraint::Length(3),
+            ratatui::layout::Constraint::Length(1),
         ])
         .split(inner);
 
-    // Headline badge: a rounded pill, never a filled rectangle.
+    // Headline badge: inline caps, never a filled rectangle.
     if let Some((text, tone)) = &dlg.headline {
-        pill(
-            f,
+        let width = pill_width(text).min(inner.width.saturating_sub(2));
+        f.render_widget(
+            Paragraph::new(badge(text.clone(), *tone)),
             Rect {
                 x: inner.x + 1,
-                width: inner.width.saturating_sub(2),
+                width,
+                height: 1,
                 ..split[0]
             },
-            text.clone(),
-            *tone,
         );
     }
 
@@ -820,14 +801,9 @@ pub fn render_dialog(f: &mut Frame, area: Rect, dlg: &Dialog) -> Rect {
         split[1],
     );
 
-    // Footer keycaps are pills too; the labels between them stay plain so the
-    // row reads as one sentence.
+    // Footer keycaps are inline badges too; the labels between them stay plain
+    // so the row reads as one sentence.
     let footer = split[3];
-    let mid = Rect {
-        y: footer.y + footer.height.saturating_sub(1) / 2,
-        height: 1,
-        ..footer
-    };
     let mut x = inner.x + 2;
     let keycaps: &[(&str, Tone, &str)] = if dlg.destructive {
         &[("enter", Tone::Error, " confirm "), ("esc", Tone::Neutral, " cancel")]
@@ -835,20 +811,22 @@ pub fn render_dialog(f: &mut Frame, area: Rect, dlg: &Dialog) -> Rect {
         &[("esc", Tone::Neutral, " close")]
     };
     for (key, tone, label) in keycaps {
-        let slot = Rect {
-            x,
-            y: footer.y,
-            width: footer.right().saturating_sub(x),
-            height: footer.height,
-        };
-        let used = pill(f, slot, *key, *tone);
-        x = used.right().saturating_add(1);
+        let badge_w = pill_width(key).min(footer.right().saturating_sub(x));
+        f.render_widget(
+            Paragraph::new(badge(*key, *tone)),
+            Rect {
+                x,
+                width: badge_w,
+                ..footer
+            },
+        );
+        x = x.saturating_add(badge_w).saturating_add(1);
         f.render_widget(
             Paragraph::new(Span::styled(*label, Style::default().fg(th::MUTED))),
             Rect {
                 x,
-                width: mid.right().saturating_sub(x),
-                ..mid
+                width: footer.right().saturating_sub(x),
+                ..footer
             },
         );
         x += label.chars().count() as u16;

@@ -566,8 +566,9 @@ fn umount_confirm_renders_target_path() {
 
 // --------------------------------------------------------------- new chrome
 
-/// First rendered row containing `needle`, or "" when absent. Chrome bands now
-/// span three rows, so tests locate content by what it says, not by index.
+/// First rendered row containing `needle`, or "" when absent. Chrome bands are
+/// taller than their content, so tests locate content by what it says, not by
+/// index.
 fn srow<'a>(out: &'a str, needle: &str) -> &'a str {
     out.lines().find(|l| l.contains(needle)).unwrap_or_default()
 }
@@ -1000,10 +1001,10 @@ fn footer_merges_status_and_context_hints() {
         .unwrap_or_default();
     assert!(footer.contains("saved 12 files"), "status missing from footer: {footer:?}");
     assert!(footer.contains("x menu"), "panel hints missing from footer: {footer:?}");
-    // Status and hints still share one row; the band around them is the pill.
+    // Status and hints share one row; the status is an inline badge.
     assert!(
-        footer.contains('│'),
-        "status must be wrapped in a pill: {footer:?}"
+        footer.contains('◖') && footer.contains('◗'),
+        "status must be wrapped in an inline badge: {footer:?}"
     );
 }
 
@@ -1870,105 +1871,138 @@ fn menu_and_detail_survive_pathological_sizes() {
     }
 }
 
-// ------------------------------------------------------------------- pills
+// ------------------------------------------------------------------ badges
 
-/// Assert the text at `needle` sits inside a rounded pill: vertical borders on
-/// its own row, rounded corners on the rows directly above and below.
-fn assert_pill_around(out: &str, needle: &str) {
-    let lines: Vec<&str> = out.lines().collect();
-    let idx = lines
-        .iter()
-        .position(|l| l.contains(needle))
+/// Assert the text at `needle` sits inside an inline badge: `◖` before it and
+/// `◗` after it on the same row, with no box border in between.
+fn assert_badge_around(out: &str, needle: &str) {
+    let line = out
+        .lines()
+        .find(|l| l.contains(needle))
         .unwrap_or_else(|| panic!("no row containing {needle:?}:\n{out}"));
-    let row: Vec<char> = lines[idx].chars().collect();
-    let top: Vec<char> = lines
-        .get(idx.wrapping_sub(1))
-        .map(|l| l.chars().collect())
-        .unwrap_or_default();
-    let bottom: Vec<char> = lines
-        .get(idx + 1)
-        .map(|l| l.chars().collect())
-        .unwrap_or_default();
-
-    let x = lines[idx]
-        .chars()
-        .collect::<String>()
-        .find(needle)
-        .map(|b| lines[idx][..b].chars().count())
-        .expect("needle");
+    let chars: Vec<char> = line.chars().collect();
+    let x = line[..line.find(needle).expect("needle")].chars().count();
 
     let left = (0..x)
         .rev()
-        .find(|i| top.get(*i) == Some(&'╭'))
-        .unwrap_or_else(|| panic!("no top-left corner above {needle:?}:\n{out}"));
-    let right = (x..top.len())
-        .find(|i| top.get(*i) == Some(&'╮'))
-        .unwrap_or_else(|| panic!("no top-right corner above {needle:?}:\n{out}"));
-    assert_eq!(row.get(left), Some(&'│'), "left border missing for {needle:?}:\n{out}");
-    assert_eq!(row.get(right), Some(&'│'), "right border missing for {needle:?}:\n{out}");
-    assert_eq!(bottom.get(left), Some(&'╰'), "bottom-left corner missing for {needle:?}:\n{out}");
-    assert_eq!(bottom.get(right), Some(&'╯'), "bottom-right corner missing for {needle:?}:\n{out}");
+        .find(|i| chars.get(*i) == Some(&'◖'))
+        .unwrap_or_else(|| panic!("no ◖ before {needle:?}:\n{out}"));
+    let right = (x..chars.len())
+        .find(|i| chars.get(*i) == Some(&'◗'))
+        .unwrap_or_else(|| panic!("no ◗ after {needle:?}:\n{out}"));
+    assert!(left < x && x < right, "badge caps do not surround {needle:?}:\n{out}");
 }
 
 #[test]
-fn header_cluster_state_is_a_rounded_pill() {
+fn badges_are_one_line_capped_fills() {
+    use crate::ui::components::{badge, badge_colored, Tone};
+    use crate::ui::theme as th;
+
+    let line = badge("1 live", Tone::Ok);
+    assert_eq!(line.spans.len(), 3, "a badge is caps + one padded middle");
+    assert_eq!(line.spans[0].content.as_ref(), "◖");
+    assert_eq!(line.spans[1].content.as_ref(), " 1 live ");
+    assert_eq!(line.spans[2].content.as_ref(), "◗");
+    // Caps carry the page colour so the tone fill reads as a half-circle end.
+    assert_eq!(line.spans[0].style.fg, Some(th::PAGE));
+    assert_eq!(line.spans[0].style.bg, Some(th::OK));
+    assert_eq!(line.spans[2].style.fg, Some(th::PAGE));
+    assert_eq!(line.spans[2].style.bg, Some(th::OK));
+    // The middle is dark ink on the same tone.
+    assert_eq!(line.spans[1].style.fg, Some(th::INK));
+    assert_eq!(line.spans[1].style.bg, Some(th::OK));
+    assert!(line.spans[1]
+        .style
+        .add_modifier
+        .contains(ratatui::style::Modifier::BOLD));
+
+    // The explicit-colour variant exists for the fading footer status.
+    let fade = ratatui::style::Color::Rgb(1, 2, 3);
+    let line = badge_colored("syncing", fade);
+    assert_eq!(line.spans[0].style.bg, Some(fade));
+    assert_eq!(line.spans[1].style.bg, Some(fade));
+    assert_eq!(line.spans[2].style.bg, Some(fade));
+    assert_eq!(line.spans[2].content.as_ref(), "◗");
+}
+
+#[test]
+fn header_cluster_state_is_an_inline_badge() {
     let mut app = test_app();
     app.panel = Panel::Dashboard;
     populate_sample_data(&mut app);
     let out = render_app(&app, 120, 30);
-    assert_pill_around(&out, "1 worker");
+    assert_badge_around(&out, "1 worker");
     assert!(out.lines().any(|l| l.contains("master-1:8995")), "master missing");
 }
 
 #[test]
-fn panel_badges_are_rounded_pills() {
+fn panel_badges_are_inline() {
     let mut app = test_app();
     app.panel = Panel::Mounts;
     populate_sample_data(&mut app);
     let out = render_app(&app, 120, 30);
-    assert_pill_around(&out, "id 2");
-    assert_pill_around(&out, "ttl ∞");
+    assert_badge_around(&out, "id 2");
+    assert_badge_around(&out, "ttl ∞");
 
     let mut bench = test_app();
     bench.panel = Panel::Bench;
     populate_sample_data(&mut bench);
     let out = render_app(&bench, 120, 30);
-    assert_pill_around(&out, "profile basic");
-    assert_pill_around(&out, "done");
+    assert_badge_around(&out, "profile basic");
+    assert_badge_around(&out, "done");
 
     // Files: type badge and the breadcrumb count.
     let mut files = test_app();
     files.panel = Panel::Files;
     populate_sample_data(&mut files);
     let out = render_app(&files, 120, 30);
-    assert_pill_around(&out, "directory");
-    assert_pill_around(&out, "2/2");
+    assert_badge_around(&out, "directory");
+    assert_badge_around(&out, "2/2");
+
+    // Nodes: the live count (dot included) and the total block count.
+    let mut nodes = test_app();
+    nodes.panel = Panel::Nodes;
+    populate_sample_data(&mut nodes);
+    let out = render_app(&nodes, 120, 30);
+    assert_badge_around(&out, "1 live");
+    assert_badge_around(&out, "512 blocks");
+
+    // A panel-title badge (Fsck `clean`) is inline too; the borders stay rounded.
+    let mut fsck = test_app();
+    fsck.panel = Panel::Fsck;
+    populate_sample_data(&mut fsck);
+    let out = render_app(&fsck, 120, 30);
+    assert_badge_around(&out, "action needed");
+    assert!(out.contains('╭'), "panels keep rounded borders");
 }
 
 #[test]
-fn dialog_keycaps_and_help_badge_are_rounded_pills() {
+fn dialog_keycaps_and_help_badge_are_inline() {
     let mut app = test_app();
     app.panel = Panel::Files;
     populate_sample_data(&mut app);
     app.files.selected = 1;
     press(&mut app, crossterm::event::KeyCode::Delete);
     let out = render_app(&app, 120, 32);
-    assert_pill_around(&out, "enter");
-    assert_pill_around(&out, "esc");
+    assert_badge_around(&out, "enter");
+    assert_badge_around(&out, "esc");
 
     let mut help = test_app();
     help.help_visible = true;
     let out = render_app(&help, 120, 40);
-    assert_pill_around(&out, "8 panels");
+    assert_badge_around(&out, "8 panels");
 }
 
 #[test]
-fn no_filled_tag_backgrounds_remain() {
+fn badge_fills_stay_inside_the_caps() {
+    use crate::ui::theme as th;
     use ratatui::style::Color;
 
-    // Row selection is the only allowed filled background; every badge must be
-    // a rounded pill, so any other non-reset background is a regression.
-    let allowed = [Color::Reset, crate::ui::theme::SELECTED_BG];
+    // Row selection is the only unbounded filled background. Every other
+    // non-reset background must be a badge fill: one contiguous tone run on a
+    // single row, starting at ◖ and ending at ◗.
+    let allowed = [Color::Reset, th::SELECTED_BG];
+    let tones = [th::MUTED, th::ACCENT, th::OK, th::WARN, th::ERROR, th::DIR];
     let scan = |app: &App, w: u16, h: u16| -> Vec<(u16, u16, Color)> {
         let backend = TestBackend::new(w, h);
         let mut term = Terminal::new(backend).unwrap();
@@ -1978,7 +2012,20 @@ fn no_filled_tag_backgrounds_remain() {
         for y in 0..buf.area.height {
             for x in 0..buf.area.width {
                 let bg = buf[(x, y)].bg;
-                if !allowed.contains(&bg) {
+                if allowed.contains(&bg) {
+                    continue;
+                }
+                let mut left = x;
+                while left > 0 && buf[(left - 1, y)].bg == bg {
+                    left -= 1;
+                }
+                let mut right = x;
+                while right + 1 < buf.area.width && buf[(right + 1, y)].bg == bg {
+                    right += 1;
+                }
+                let opens = buf[(left, y)].symbol() == "◖";
+                let closes = buf[(right, y)].symbol() == "◗";
+                if !(tones.contains(&bg) && opens && closes) {
                     hits.push((x, y, bg));
                 }
             }
@@ -2019,7 +2066,7 @@ fn no_filled_tag_backgrounds_remain() {
 // ------------------------------------------------------------ review polish
 
 #[test]
-fn header_groups_title_and_cluster_pill_together() {
+fn header_groups_title_and_cluster_badge_together() {
     let mut app = test_app();
     app.panel = Panel::Dashboard;
     populate_sample_data(&mut app);
@@ -2028,17 +2075,17 @@ fn header_groups_title_and_cluster_pill_together() {
     let idx = lines
         .iter()
         .position(|l| l.contains("1 worker"))
-        .expect("pill row");
+        .expect("badge row");
     let row: Vec<char> = lines[idx].chars().collect();
     let title_byte = lines[idx].find("Dashboard").expect("title");
     let title_end = lines[idx][..title_byte].chars().count() + "Dashboard".len();
-    let border = (title_end..row.len())
-        .find(|i| row[*i] == '│')
-        .expect("pill border");
+    let cap = (title_end..row.len())
+        .find(|i| row[*i] == '◖')
+        .expect("badge left cap");
     assert!(
-        border.saturating_sub(title_end) <= 1,
-        "pill must sit next to the title (gap {}):\n{out}",
-        border.saturating_sub(title_end)
+        cap.saturating_sub(title_end) <= 1,
+        "badge must sit next to the title (gap {}):\n{out}",
+        cap.saturating_sub(title_end)
     );
     // The shortcut group stays on the right edge.
     let hints_byte = lines[idx].find("1-8").expect("shortcut hint");
@@ -2111,7 +2158,7 @@ fn jobs_summary_describes_session_only_listing() {
 }
 
 #[test]
-fn footer_status_pill_is_capped_and_keeps_hints_visible() {
+fn footer_status_badge_is_capped_and_keeps_hints_visible() {
     let mut app = test_app();
     app.panel = Panel::Files;
     populate_sample_data(&mut app);
@@ -2121,26 +2168,23 @@ fn footer_status_pill_is_capped_and_keeps_hints_visible() {
 
     let width = 120u16;
     let out = render_app(&app, width, 26);
-    let lines: Vec<&str> = out.lines().collect();
-    let idx = lines
-        .iter()
-        .position(|l| l.contains('…'))
+    let row = out
+        .lines()
+        .find(|l| l.contains('…'))
         .expect("status should be truncated");
-    let row: Vec<char> = lines[idx].chars().collect();
+    assert!(row.contains('…'), "status should be truncated:\n{out}");
     let close = row
-        .iter()
-        .enumerate()
-        .skip(1)
-        .find(|(_, c)| **c == '│')
-        .map(|(i, _)| i)
-        .expect("pill right border");
+        .chars()
+        .position(|c| c == '◗')
+        .map(|i| i + 1)
+        .expect("status badge right cap");
     let cap = (width as usize * 45) / 100;
     assert!(
         close <= cap,
-        "status pill width {close} exceeds 45% cap {cap}:\n{out}"
+        "status badge width {close} exceeds 45% cap {cap}:\n{out}"
     );
     assert!(
-        lines[idx].contains("x menu"),
+        row.contains("x menu"),
         "hints pushed out by a long status:\n{out}"
     );
 }

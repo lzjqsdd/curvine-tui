@@ -34,7 +34,7 @@ pub fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // header band (the cluster badge is a pill)
+            Constraint::Length(3), // header band (the cluster badge is inline)
             Constraint::Min(3),    // main area
             Constraint::Length(command_hint), // command completions
             Constraint::Length(3), // footer band
@@ -78,15 +78,13 @@ pub fn render(f: &mut Frame, app: &App) {
     }
 }
 
-/// Context header: identity + panel on the left, the cluster state as a rounded
-/// pill, and navigation hints on the right. The band is three rows tall because
-/// a one-line rounded box needs a top border, the content row and a bottom
-/// border; everything else in the band stays borderless.
+/// Context header: identity + panel on the left, the cluster state as an
+/// inline badge, and navigation hints on the right.
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
     if area.height == 0 {
         return;
     }
-    let mid = Rect {
+    let row = Rect {
         y: area.y + area.height.saturating_sub(1) / 2,
         height: 1,
         ..area
@@ -112,7 +110,7 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(Line::from(identity)),
         Rect {
             width: (identity_w as u16).min(area.width),
-            ..mid
+            ..row
         },
     );
 
@@ -154,14 +152,14 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         app.refresh_countdown_secs()
     );
 
-    // Left group: identity then the cluster pill, one cell apart. Right group:
+    // Left group: identity then the cluster badge, one cell apart. Right group:
     // the shortcut hint. Everything between them stays empty.
     let hints = "1-8 switch  ·  : command";
     let hints_w = hints.chars().count() as u16;
     let badge_w = components::pill_width(&badge);
     let identity_w = identity_w.min(area.width as usize) as u16;
-    let pill_x = identity_w.saturating_add(1);
-    let left_w = pill_x.saturating_add(badge_w);
+    let badge_x = identity_w.saturating_add(1);
+    let left_w = badge_x.saturating_add(badge_w);
 
     let hints_fit = area.width > hints_w && area.right().saturating_sub(hints_w) > left_w + 1;
     if hints_fit {
@@ -170,33 +168,33 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
             Rect {
                 x: area.right() - hints_w,
                 width: hints_w,
-                ..mid
+                ..row
             },
         );
     }
 
     if left_w <= area.width {
-        components::pill(
-            f,
+        f.render_widget(
+            Paragraph::new(components::badge(badge, tone)),
             Rect {
-                x: pill_x,
+                x: badge_x,
+                y: row.y,
                 width: badge_w,
-                ..area
+                height: 1,
             },
-            badge,
-            tone,
         );
     }
 }
 
-/// The footer merges the status row and the key hints: the status is a pill on
-/// the left (its tone carries the fade), the contextual hints stay plain on the
-/// right so a long hint list never turns into a giant box.
+/// The footer merges the status row and the key hints: the status is an inline
+/// badge on the left (its tone carries the fade), the contextual hints stay
+/// plain on the right so a long hint list never turns into a giant box.
+/// The badge sits on the band's middle row.
 fn render_footer(f: &mut Frame, app: &App, area: Rect) {
     if area.height == 0 {
         return;
     }
-    let mid = Rect {
+    let row = Rect {
         y: area.y + area.height.saturating_sub(1) / 2,
         height: 1,
         ..area
@@ -210,7 +208,7 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
             Rect {
                 x: area.right() - hints_w,
                 width: hints_w,
-                ..mid
+                ..row
             },
         );
     }
@@ -228,7 +226,7 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
                 } else {
                     area.width
                 },
-                ..mid
+                ..row
             },
         );
         return;
@@ -246,19 +244,19 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
                 } else {
                     area.width
                 },
-                ..mid
+                ..row
             },
         );
         return;
     }
 
-    let (text, color) = status_pill(app);
+    let (text, color) = status_badge(app);
     let available = if hints_fit {
         area.right().saturating_sub(hints_w + 2)
     } else {
         area.width
     };
-    // A long error must never push the hints off-screen: the status pill is
+    // A long error must never push the hints off-screen: the status badge is
     // capped at 45% of the band, and the message is clipped with an ellipsis.
     let cap = ((area.width as u32 * 45) / 100) as u16;
     let max_w = available.min(cap.max(16));
@@ -270,21 +268,21 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
     } else {
         text
     };
-    components::pill_colored(
-        f,
+    f.render_widget(
+        Paragraph::new(components::badge_colored(text.clone(), color)),
         Rect {
+            x: area.x,
+            y: row.y,
             width: components::pill_width(&text).min(max_w),
-            ..area
+            height: 1,
         },
-        text,
-        color,
     );
 }
 
-/// Status text and the colour that carries its fade. A pill's border and text
-/// use the same interpolated colour, so the message dims smoothly instead of
-/// switching palette entries.
-fn status_pill(app: &App) -> (String, ratatui::style::Color) {
+/// Status text and the colour that carries its fade. The badge fill uses the
+/// interpolated colour, so the message dims smoothly instead of switching
+/// palette entries.
+fn status_badge(app: &App) -> (String, ratatui::style::Color) {
     let alpha = app.anim.status_alpha();
     let faded = |c: ratatui::style::Color| crate::anim::lerp_color(th::MUTED, c, alpha);
     if app.status_is_error {

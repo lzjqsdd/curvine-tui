@@ -18,7 +18,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // knobs + state
+            Constraint::Length(3), // knobs + state as inline badges
             Constraint::Min(4),    // results
         ])
         .split(area);
@@ -41,8 +41,7 @@ fn render_config(f: &mut Frame, app: &App, area: Rect) {
         .map(|d| format!("{}s", d / 1000))
         .unwrap_or_else(|| "∞".to_string());
 
-    // Knobs and run state are badges, so they are pills. The bordered strip is
-    // gone: a rounded box around a rounded box would read as noise.
+    // Knobs and run state are inline badges.
     let state: (String, Tone) = if let Some(started) = app.bench_running {
         (
             format!("{} running {}s", components::live_spinner(), started.elapsed().as_secs()),
@@ -65,7 +64,7 @@ fn render_config(f: &mut Frame, app: &App, area: Rect) {
         state,
     ];
     let avail = area.width.saturating_sub(if base_w + 2 < area.width { base_w + 2 } else { 0 });
-    components::pills(
+    components::badges(
         f,
         Rect {
             width: avail,

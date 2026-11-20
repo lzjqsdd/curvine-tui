@@ -58,15 +58,13 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         let total_used: i64 = c.workers.iter().map(|w| w.fs_used).sum();
         let r = ratio(total_used, total_cap.max(1));
 
-        spans.push(components::dot(if c.workers.is_empty() {
+        let live_tone = if c.workers.is_empty() {
             Tone::Warn
         } else {
             Tone::Ok
-        }));
-        spans.push(Span::styled(
-            format!(" {} live", c.workers.len()),
-            Style::default().fg(th::MUTED),
-        ));
+        };
+        // The round dot stays plain text inside the badge's middle span.
+        spans.extend(components::badge(format!("● {} live", c.workers.len()), live_tone).spans);
         spans.push(Span::raw("   "));
         spans.push(Span::styled(
             bar_with_pct(r, 14),
@@ -96,7 +94,7 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         },
     );
     if let Some(badge) = badge {
-        components::pills_end(f, area, &[(badge, Tone::Neutral)]);
+        components::badges_end(f, area, &[(badge, Tone::Neutral)]);
     }
 }
 
@@ -253,22 +251,23 @@ fn render_detail(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    // State is a status badge, so it gets a pill; the metrics stay plain.
+    // State is an inline status badge; the metrics stay plain.
     let tone = components::tone_for_status(&w.status);
-    let pill_rect = components::pill(
-        f,
+    let badge = format!("● {}", w.status);
+    let badge_w = components::pill_width(&badge).min(area.width.saturating_sub(1));
+    f.render_widget(
+        Paragraph::new(components::badge(badge, tone)),
         Rect {
             x: area.x + 1,
-            width: area.width.saturating_sub(1),
-            ..area
+            y: mid.y,
+            width: badge_w,
+            height: 1,
         },
-        format!("● {}", w.status),
-        tone,
     );
     let r = ratio(w.fs_used, w.capacity.max(1));
     let hint = "d detail ";
     let hint_w = hint.chars().count() as u16;
-    let x = pill_rect.right().saturating_add(1);
+    let x = area.x + 1 + badge_w + 1;
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(

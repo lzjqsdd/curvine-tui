@@ -92,18 +92,18 @@ fn render_kv(f: &mut Frame, view: &DetailView, area: Rect) {
 
     let mut top = inner.y;
     if let Some((tag, subject)) = &view.headline {
-        let pill_rect = components::pill(
-            f,
-            Rect {
-                x: inner.x + 1,
-                width: inner.width.saturating_sub(1),
-                y: inner.y,
-                height: inner.height.min(3),
-            },
-            tag.clone(),
-            Tone::Info,
+        let badge_w = components::pill_width(tag).min(inner.width.saturating_sub(1));
+        let badge = Rect {
+            x: inner.x + 1,
+            y: inner.y,
+            width: badge_w,
+            height: inner.height.min(1),
+        };
+        f.render_widget(
+            Paragraph::new(components::badge(tag.clone(), Tone::Info)),
+            badge,
         );
-        if pill_rect.height >= 3 {
+        if badge.height >= 1 {
             f.render_widget(
                 Paragraph::new(Span::styled(
                     subject.clone(),
@@ -112,14 +112,14 @@ fn render_kv(f: &mut Frame, view: &DetailView, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 )),
                 Rect {
-                    x: pill_rect.right().saturating_add(1),
-                    y: pill_rect.y + 1,
-                    width: inner.right().saturating_sub(pill_rect.right() + 1),
+                    x: badge.right().saturating_add(1),
+                    y: badge.y,
+                    width: inner.right().saturating_sub(badge.right() + 1),
                     height: 1,
                 },
             );
         }
-        top = pill_rect.bottom();
+        top = inner.y + 1;
     }
 
     let lines: Vec<Line> = view
