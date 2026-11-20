@@ -671,9 +671,7 @@ pub fn render_toast(f: &mut Frame, area: Rect, text: &str, count: u32, alpha: f6
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             content,
-            Style::default()
-                .fg(color)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
         ))),
         inner,
     );

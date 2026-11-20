@@ -2185,7 +2185,7 @@ fn footer_status_badge_is_capped_and_keeps_hints_visible() {
     let mut app = test_app();
     app.panel = Panel::Files;
     populate_sample_data(&mut app);
-    app.status = "failed to read a very long remote path that goes on and on: /data/warehouse/part-0.bin (permission denied)".into();
+    app.status = "copied 128 files to /data/warehouse/part-0.bin before the connection was reset".into();
     app.anim.mark_status();
 
     let width = 120u16;
@@ -2226,6 +2226,201 @@ fn footer_is_a_single_row() {
     assert!(
         lines[lines.len() - 2].contains('╰') && lines[lines.len() - 2].contains('╯'),
         "footer is more than one row:\n{out}"
+    );
+}
+
+// --------------------------------------------------------------- error toasts
+
+#[test]
+fn error_status_creates_a_toast_but_success_does_not() {
+    let mut ok = test_app();
+    ok.set_status_for_test("saved 12 files");
+    assert!(ok.toast.is_none(), "success must stay in the footer");
+    assert_eq!(ok.status, "saved 12 files");
+
+    let mut err = test_app();
+    err.set_error_for_test("mount /data: permission denied");
+    let toast = err.toast.as_ref().expect("error must create a toast");
+    assert_eq!(toast.text, "mount /data: permission denied");
+    assert_eq!(toast.count, 1);
+    assert!(
+        err.status.is_empty(),
+        "errors must not also enter the footer"
+    );
+    assert!(
+        err.log.iter().any(|l| l.contains("ERROR mount /data")),
+        "dashboard event log must keep the error: {:?}",
+        err.log
+    );
+}
+
+#[test]
+fn toast_renders_at_the_bottom_and_counts_repeats() {
+    let mut app = test_app();
+    app.panel = Panel::Dashboard;
+    populate_sample_data(&mut app);
+    app.set_error_for_test("ls /data: connection refused");
+    app.set_error_for_test("ls /data: connection refused");
+
+    assert_eq!(
+        app.toast.as_ref().unwrap().count,
+        2,
+        "repeats must bump the count instead of replacing the toast"
+    );
+
+    let out = render_app(&app, 120, 30);
+    let lines: Vec<&str> = out.lines().collect();
+    let n = lines.len();
+
+    assert!(
+        lines[n - 3].contains("● ls /data: connection refused ×2"),
+        "toast content missing or count suffix wrong: {:?}\n{out}",
+        lines[n - 3]
+    );
+    assert!(
+        lines[n - 4].contains('╭') && lines[n - 4].contains('╮'),
+        "toast top border missing at the bottom of the screen:\n{out}"
+    );
+    assert!(
+        lines[n - 2].contains('╰') && lines[n - 2].contains('╯'),
+        "toast bottom border missing:\n{out}"
+    );
+    assert!(
+        !lines[n - 1].contains("connection refused"),
+        "error must not also appear in the footer: {:?}",
+        lines[n - 1]
+    );
+}
+
+#[test]
+fn toast_is_centred_and_truncated_to_60_percent_of_the_screen() {
+    let mut app = test_app();
+    app.set_error_for_test("x".repeat(400));
+
+    let width = 120u16;
+    let out = render_app(&app, width, 30);
+    let lines: Vec<&str> = out.lines().collect();
+    let n = lines.len();
+    let top = lines[n - 4];
+    let top_chars: Vec<char> = top.chars().collect();
+    let start = top_chars
+        .iter()
+        .position(|c| *c == '╭')
+        .expect("toast top-left border");
+    let end = top_chars
+        .iter()
+        .rposition(|c| *c == '╮')
+        .expect("toast top-right border");
+    let toast_w = end - start + 1;
+    let cap = (width as usize * 60) / 100;
+    assert!(
+        toast_w <= cap,
+        "toast {toast_w} cells wide exceeds the 60% cap {cap}:\n{out}"
+    );
+    let left = start;
+    let right = width as usize - (end + 1);
+    assert!(
+        left.abs_diff(right) <= 1,
+        "toast is not centred: {left} cells left, {right} right\n{out}"
+    );
+    assert!(
+        out.contains('…'),
+        "a truncated toast must end in an ellipsis:\n{out}"
+    );
+}
+
+#[test]
+fn any_key_dismisses_the_toast_and_still_runs_its_action() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.set_error_for_test("ls /data: connection refused");
+    assert!(app.toast.is_some());
+
+    press(&mut app, crossterm::event::KeyCode::Char('r'));
+
+    assert!(app.toast.is_none(), "the key must dismiss the toast");
+    assert!(
+        app.files.load.loading,
+        "r must still refresh the listing after dismissing the toast"
+    );
+}
+
+#[test]
+fn a_mouse_event_dismisses_the_toast() {
+    let mut app = test_app();
+    app.set_error_for_test("boom");
+
+    app.on_event(crate::event::AppEvent::Mouse(
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Moved,
+            column: 10,
+            row: 10,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        },
+    ));
+
+    assert!(app.toast.is_none(), "a mouse event must dismiss the toast");
+}
+
+#[test]
+fn toast_expires_after_hold_and_fade_frames() {
+    let mut app = test_app();
+    app.set_error_for_test("connection refused");
+
+    let frame = std::time::Duration::from_millis(16);
+    let frames = |app: &mut App, n: usize| {
+        for _ in 0..n {
+            app.on_event(crate::event::AppEvent::Frame(frame));
+        }
+    };
+
+    // 240 frames ≈ 3.84 s: still inside the 4 s hold and fully opaque.
+    frames(&mut app, 240);
+    assert!(app.toast.is_some(), "toast expired before the hold elapsed");
+    assert_eq!(app.anim.toast_alpha(), 1.0);
+
+    // 40 more frames ≈ 4.48 s: mid-fade, still visible.
+    frames(&mut app, 40);
+    assert!(
+        app.toast.is_some(),
+        "toast disappeared before the fade finished"
+    );
+    let alpha = app.anim.toast_alpha();
+    assert!(
+        alpha > 0.0 && alpha < 1.0,
+        "expected a mid-fade alpha, got {alpha}"
+    );
+
+    // 50 more frames ≈ 5.28 s crosses hold + fade.
+    frames(&mut app, 50);
+    assert!(
+        app.toast.is_none(),
+        "toast must expire after hold + fade frames"
+    );
+}
+
+#[test]
+fn footer_never_shows_error_messages() {
+    let mut app = test_app();
+    app.panel = Panel::Dashboard;
+    populate_sample_data(&mut app);
+    app.set_error_for_test("disk quota exceeded on /data/warehouse");
+
+    let out = render_app(&app, 120, 30);
+    let lines: Vec<&str> = out.lines().collect();
+    let footer = *lines.last().expect("footer row");
+    assert!(
+        !footer.contains("disk quota exceeded"),
+        "error leaked into the footer: {footer:?}"
+    );
+    assert!(
+        footer.contains("x menu"),
+        "footer hints missing: {footer:?}"
+    );
+    assert!(
+        lines[lines.len() - 3].contains("disk quota exceeded"),
+        "error missing from the toast row:\n{out}"
     );
 }
 

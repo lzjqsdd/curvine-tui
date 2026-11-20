@@ -632,6 +632,11 @@ impl App {
         self.set_status(msg, false);
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_error_for_test(&mut self, msg: impl Into<String>) {
+        self.set_status(msg, true);
+    }
+
     fn set_status(&mut self, msg: impl Into<String>, is_error: bool) {
         let msg = msg.into();
         self.log(if is_error {
@@ -647,7 +652,10 @@ impl App {
                     toast.count = toast.count.saturating_add(1);
                 }
             } else {
-                self.toast = Some(Toast { text: msg, count: 1 });
+                self.toast = Some(Toast {
+                    text: msg,
+                    count: 1,
+                });
             }
             self.anim.mark_toast();
             // Errors belong to the toast; clearing keeps the footer from

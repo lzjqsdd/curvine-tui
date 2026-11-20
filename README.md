@@ -96,6 +96,9 @@ hidden behind memorisation.
 | `esc` | close the menu/detail, or clear file marks |
 | `q` / `ctrl-c` | quit (detail/menu close instead) |
 
+Any key — or a mouse event — dismisses an error toast, and the key still
+performs its normal action: `r` clears the alert *and* refreshes the panel.
+
 ### Files
 
 | Key | Action |
@@ -146,7 +149,7 @@ src/
 ├── ui/
 │   ├── mod.rs     frame layout, header/footer, shared formatters
 │   ├── theme.rs   palette + usage thresholds
-│   ├── components.rs  tags, bars, KV lines, inputs, dialogs, help
+│   ├── components.rs  tags, bars, KV lines, inputs, dialogs, toasts, help
 │   ├── menu.rs        contextual action menu widget
 │   ├── detail.rs      full-screen file/worker detail views
 │   ├── mounts.rs      mount table + mount form + unmount confirm
@@ -199,7 +202,8 @@ Motion is used only where it explains a change, never for decoration:
 | capacity and health gauges | a 5 s refresh that snaps sideways is read as a glitch; a bar that travels is read as a change | critically-damped spring |
 | namespace counters | files/dirs/blocks count up so the eye can see *how much* changed | spring, integer tolerance |
 | transfer progress | progress arrives in bursts; easing makes it monotonic-looking | spring per transfer |
-| status messages | a transient error stays readable even if you look away | wall-clock hold then colour fade |
+| success/info status | a transient confirmation stays readable even if you look away | wall-clock hold then colour fade in the footer badge |
+| error toast | an error must be noticed without blocking the UI, and a repeating refresh error must not flicker | frame-driven hold then colour fade; repeats bump a `×N` counter |
 
 Dialogs deliberately do **not** animate. A modal sits on the critical path to a
 decision, and an early attempt at a 150 ms pop-in showed the box at 88% scale
@@ -339,6 +343,7 @@ Panels share one widget vocabulary so the UI reads consistently:
 |---|---|
 | **Status dot** | health and state: `● healthy`, `● lost`, `○ n/a`. Colour comes from `tone_for_status`, so a state can never be green in one panel and grey in another. The help popup documents the palette. |
 | **Badge** | a one-line, text-height label: `◖ text ◗`. The half-circle caps are glyphs, not borders: foreground is the page colour and background is the tone, so the fill ends in rounded caps. The middle is ` text ` in dark ink on the same tone, bold. Used for the cluster state in the header, the footer status, panel strips, the Nodes live/block counters, dialog keycaps, the help panel count and badged panel titles. |
+| **Toast** | bottom-centred rounded alert for errors: three rows tall, capped at 60% of the screen, with a `● message` line in the error tone. It floats over panel content with the default background (no solid fill), holds for 4 s, then fades. A repeat of the same error becomes `● message ×2` instead of restarting the banner. Any key dismisses it without swallowing the key's action. |
 | **Tag** | inline categorical text (mount mode, storage class, direction) — coloured text only, never a filled block. Table cells are text-only because a cell cannot host a badge's caps. |
 | **Bar** | eighth-block progress (`▏▎▍▌▋▊▉`) so short bars keep sub-cell precision; `bar_with_pct` adds a right-aligned percentage. |
 | **Bar block** | full-width capacity/health/progress meter in a bordered block, drawn with block characters and a centred label on plain background (no inverted/filled label). |
@@ -357,14 +362,17 @@ its text height, so no band reserves rows for borders.
 The only filled backgrounds in the UI are badge interiors and the full-row
 selection highlight. A badge's background is exactly as wide as `◖ text ◗` and
 stops at the caps, so it can never grow into the solid rectangle this style
-exists to remove. Status dots remain round by design, and `Tag` has no filled
-variant at all.
+exists to remove. The toast clears the cells it covers so text cannot bleed
+through, but paints no fill: its body keeps the terminal's default background.
+Status dots remain round by design, and `Tag` has no filled variant at all.
 
 The header is two groups: identity + cluster badge on the left, shortcut hint on
 the right, with empty space between. Empty tables are not left blank — Files
 says `empty directory` / `no matches`, Jobs says when session jobs will appear.
-A status message is capped at 45% of the footer width, so a long error can never
-push the key hints off-screen.
+Success and info messages stay in the footer badge and are capped at 45% of the
+footer width, so a long message can never push the key hints off-screen. Errors
+never enter the footer: they are promoted to the toast, which is capped at 60%
+of the screen width.
 
 ### Two things the UI deliberately does not claim
 

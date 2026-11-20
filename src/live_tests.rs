@@ -437,15 +437,20 @@ fn live_multi_select_marks_and_batch_deletes() {
             .collect::<Vec<_>>()
     );
 
-    // Cancelling an already-finished transfer is rejected with a status, not a
+    // Cancelling an already-finished transfer is rejected with a toast, not a
     // panic; clearing then removes the finished rows.
     live.app.panel = Panel::Transfers;
     live.app.transfer_selected = 0;
     live.key(KeyCode::Delete);
+    let toast = live
+        .app
+        .toast
+        .as_ref()
+        .expect("finished-transfer cancel must raise a toast");
     assert!(
-        live.app.status.contains("already finished"),
+        toast.text.contains("already finished"),
         "expected a refusal, got {:?}",
-        live.app.status
+        toast.text
     );
     live.key(KeyCode::Char('c'));
     assert!(live.app.transfers.is_empty(), "finished rows not cleared");
@@ -519,6 +524,47 @@ fn live_multi_select_marks_and_batch_deletes() {
     );
 
     cleanup(&live, &root);
+}
+
+#[test]
+fn live_error_toast_is_rendered_and_dismissed_by_a_key() {
+    skip_unless_live!();
+    let Some(mut live) = Live::start() else {
+        return;
+    };
+    live.wait_cluster();
+
+    // Listing a path that cannot exist fails in the client. The error must
+    // surface as a toast and leave the footer alone.
+    let missing = format!("{}/missing", run_root("toast"));
+    live.command(&format!("ls {missing}"));
+    assert!(
+        live.wait_for(Duration::from_secs(60), |a| a.toast.is_some()),
+        "missing-path listing produced no toast: status {:?}",
+        live.app.status
+    );
+    let toast = live.app.toast.as_ref().expect("toast");
+    assert!(
+        toast.text.contains(&missing),
+        "toast should name the path: {:?}",
+        toast.text
+    );
+
+    let out = live.render(120, 30);
+    assert!(out.contains(&missing), "toast not rendered:\n{out}");
+    let footer = out.lines().last().unwrap_or_default();
+    assert!(
+        !footer.contains(&missing),
+        "error leaked into the footer: {footer:?}"
+    );
+
+    // A key dismisses the toast and still performs its action.
+    live.key(KeyCode::Char('r'));
+    assert!(live.app.toast.is_none(), "r did not dismiss the toast");
+    assert!(
+        live.app.files.load.loading,
+        "r's refresh was swallowed by the toast dismissal"
+    );
 }
 
 #[test]
