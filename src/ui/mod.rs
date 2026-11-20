@@ -99,9 +99,9 @@ pub fn render(f: &mut Frame, app: &App) {
 }
 
 /// How much of each tab the header draws. The menu degrades one step at a
-/// time so the panel number is the last thing to go, never the cluster pill.
+/// time; the panel number is the last thing to go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TabDetail {
+pub(crate) enum TabDetail {
     Label,
     Icon,
     Number,
@@ -111,15 +111,21 @@ impl TabDetail {
     /// Richest first: short label, then icon, then the bare number.
     const TIERS: [TabDetail; 3] = [TabDetail::Label, TabDetail::Icon, TabDetail::Number];
 
+    /// Floors that keep the menu from spending the entire header on one tier.
+    /// Below 88 the compact icon tabs give way to numbers, leaving the pill
+    /// room for its own detail.
+    const LABEL_MIN_WIDTH: u16 = 110;
+    const ICON_MIN_WIDTH: u16 = 88;
+
     fn text(self, panel: Panel, number: usize) -> String {
         match self {
             TabDetail::Label => format!(" {number} {} {} ", panel.icon(), panel.short_title()),
-            TabDetail::Icon => format!(" {number} {} ", panel.icon()),
-            TabDetail::Number => format!(" {number} "),
+            TabDetail::Icon => format!(" {number} {}", panel.icon()),
+            TabDetail::Number => format!(" {number}"),
         }
     }
 
-    fn width(self) -> usize {
+    pub(crate) fn width(self) -> usize {
         Panel::ALL
             .iter()
             .enumerate()
@@ -127,13 +133,16 @@ impl TabDetail {
             .sum()
     }
 
-    /// Widest tier that fits in `width`. If even the numbers are too wide the
-    /// caller clips them: losing a panel from the menu is worse than clipping.
-    fn fit(width: u16) -> TabDetail {
-        Self::TIERS
-            .into_iter()
-            .find(|tier| tier.width() <= width as usize)
-            .unwrap_or(TabDetail::Number)
+    /// Preferred detail tier for the terminal width. The pill adapts inside
+    /// this choice; see [`header_layout`].
+    fn for_width(width: u16) -> TabDetail {
+        if width >= Self::LABEL_MIN_WIDTH {
+            TabDetail::Label
+        } else if width >= Self::ICON_MIN_WIDTH {
+            TabDetail::Icon
+        } else {
+            TabDetail::Number
+        }
     }
 }
 
@@ -149,9 +158,52 @@ fn tab_style(active: bool) -> Style {
     }
 }
 
-/// Text and tone for the cluster pill in the header's right corner.
-fn cluster_badge(app: &App) -> (String, Tone) {
-    let (dot_glyph, cluster_text, tone) = match (&app.cluster.data, &app.cluster.error) {
+/// How much cluster detail the pill keeps. Widest first; every tier retains
+/// the health dot and the master address, which are the information.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PillTier {
+    Full,
+    Compact,
+    Minimal,
+    Bare,
+}
+
+impl PillTier {
+    const TIERS: [PillTier; 4] = [
+        PillTier::Full,
+        PillTier::Compact,
+        PillTier::Minimal,
+        PillTier::Bare,
+    ];
+
+    fn text(self, app: &App) -> String {
+        let (dot_glyph, master, _) = cluster_identity(app);
+        let workers = app
+            .cluster
+            .data
+            .as_ref()
+            .map(|c| c.workers.len())
+            .unwrap_or(0);
+        let refresh = app.refresh_countdown_secs();
+        match self {
+            PillTier::Full => {
+                let word = if workers == 1 { "worker" } else { "workers" };
+                format!("{dot_glyph} {master} · {workers} {word} · ↻{refresh}s")
+            }
+            PillTier::Compact => format!("{dot_glyph} {master} · {workers}w · ↻{refresh}s"),
+            PillTier::Minimal => format!("{dot_glyph} {master} · ↻{refresh}s"),
+            PillTier::Bare => format!("{dot_glyph} {master}"),
+        }
+    }
+
+    pub(crate) fn width(self, app: &App) -> u16 {
+        components::pill_width(&self.text(app))
+    }
+}
+
+/// The health dot, master address and tone shared by every pill tier.
+fn cluster_identity(app: &App) -> (&'static str, String, Tone) {
+    match (&app.cluster.data, &app.cluster.error) {
         (Some(c), _) => {
             let tone = if c.workers.is_empty() {
                 Tone::Warn
@@ -176,29 +228,54 @@ fn cluster_badge(app: &App) -> (String, Tone) {
             "disconnected".to_string(),
             Tone::Neutral,
         ),
+    }
+}
+
+/// Tab detail plus pill tier chosen for one header row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HeaderLayout {
+    pub(crate) tabs: TabDetail,
+    pub(crate) pill: PillTier,
+}
+
+/// Pick the layout for `width`.
+///
+/// The tab tier comes first, from explicit floors (labels >= 110, icons >= 88,
+/// numbers below). Inside that tier the pill shrinks full -> compact -> minimal
+/// -> bare, so a label menu keeps the master address even when it cannot afford
+/// the worker count. If even the bare pill does not fit with the chosen tier,
+/// the menu degrades a tier and retries; if numbers + bare still cannot fit,
+/// that layout is returned and the caller clips the tabs. The pill never
+/// disappears.
+pub(crate) fn header_layout(app: &App, width: u16) -> HeaderLayout {
+    let start = match TabDetail::for_width(width) {
+        TabDetail::Label => 0,
+        TabDetail::Icon => 1,
+        TabDetail::Number => 2,
     };
-    let workers = app
-        .cluster
-        .data
-        .as_ref()
-        .map(|c| c.workers.len())
-        .unwrap_or(0);
-    let worker_word = if workers == 1 { "worker" } else { "workers" };
-    (
-        format!(
-            "{dot_glyph} {cluster_text} · {workers} {worker_word} · ↻{}s",
-            app.refresh_countdown_secs()
-        ),
-        tone,
-    )
+
+    for tabs in &TabDetail::TIERS[start..] {
+        let tabs_w = u16::try_from(tabs.width()).unwrap_or(u16::MAX);
+        let pill = PillTier::TIERS.into_iter().find(|pill| {
+            u32::from(tabs_w) + 1 + u32::from(pill.width(app)) <= u32::from(width)
+        });
+        if let Some(pill) = pill {
+            return HeaderLayout { tabs: *tabs, pill };
+        }
+    }
+
+    HeaderLayout {
+        tabs: TabDetail::Number,
+        pill: PillTier::Bare,
+    }
 }
 
 /// One-line, borderless menu header: a tab per panel on the left and the
 /// cluster pill on the right.
 ///
-/// The tab group degrades (`n icon short` -> `n icon` -> `n`) against the width
-/// left over after the pill is placed, never the other way round: the pill
-/// carries cluster health, so it always keeps its cells.
+/// The menu and the pill share one row: the label tier buys its width by
+/// shrinking the pill's detail first, and the pill always keeps its place
+/// because it carries cluster health.
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
     if area.height == 0 {
         return;
@@ -209,20 +286,21 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         ..area
     };
 
-    let (badge, tone) = cluster_badge(app);
+    let layout = header_layout(app, area.width);
+    let badge = layout.pill.text(app);
+    let (_, _, tone) = cluster_identity(app);
     let badge_w = components::pill_width(&badge).min(area.width);
     let badge_x = area.right().saturating_sub(badge_w);
 
     // Keep one empty cell between the menu and the pill whenever there is room.
     let gap = u16::from(badge_x > area.x);
     let tabs_w = badge_x.saturating_sub(area.x).saturating_sub(gap);
-    let detail = TabDetail::fit(tabs_w);
     let tabs: Vec<Span> = Panel::ALL
         .iter()
         .enumerate()
         .map(|(i, panel)| {
             Span::styled(
-                detail.text(*panel, i + 1),
+                layout.tabs.text(*panel, i + 1),
                 tab_style(*panel == app.panel),
             )
         })

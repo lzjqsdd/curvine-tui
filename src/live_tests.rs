@@ -300,7 +300,10 @@ fn live_header_files_and_menus_work_against_the_cluster() {
         );
     }
     assert!(!header.contains("curvine-tui"), "header: {header:?}");
-    assert!(header.contains("worker"), "header: {header:?}");
+    assert!(
+        header.contains('◖') && header.contains('◗'),
+        "header pill missing: {header:?}"
+    );
     assert!(header.contains('↻'), "header: {header:?}");
     assert!(
         header.contains(crate::ui::components::DOT),

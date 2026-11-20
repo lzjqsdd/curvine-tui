@@ -351,9 +351,52 @@ fn header_menu_keeps_every_panel_number_at_narrow_widths() {
         }
         assert!(header.contains('◖') && header.contains('◗'), "pill clipped at width {width}: {header:?}");
         assert!(header.contains("master-1:8995"), "master missing at width {width}: {header:?}");
-        assert!(header.contains("1 worker"), "worker count missing at width {width}: {header:?}");
+        assert!(
+            header.contains("1 worker") || header.contains("1w"),
+            "worker count missing at width {width}: {header:?}"
+        );
         assert!(header.contains('↻'), "refresh countdown missing at width {width}: {header:?}");
     }
+}
+
+#[test]
+fn header_layout_trades_pill_detail_before_labels_and_never_drops_the_pill() {
+    use crate::ui::{header_layout, PillTier, TabDetail};
+
+    // The tier widths the selection is based on.
+    assert_eq!(TabDetail::Label.width(), 85);
+    assert_eq!(TabDetail::Icon.width(), 32);
+    assert_eq!(TabDetail::Number.width(), 16);
+
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+
+    for (width, expected) in [
+        (160u16, TabDetail::Label),
+        (128, TabDetail::Label),
+        (118, TabDetail::Label),
+        (110, TabDetail::Label),
+        (100, TabDetail::Icon),
+        (88, TabDetail::Icon),
+        (76, TabDetail::Number),
+        (60, TabDetail::Number),
+    ] {
+        let layout = header_layout(&app, width);
+        assert_eq!(
+            layout.tabs, expected,
+            "tab tier at width {width}: {layout:?}"
+        );
+        assert!(
+            layout.pill.width(&app) <= width,
+            "the pill must fit at width {width}: {layout:?}"
+        );
+    }
+
+    // Labels survive down to 110 by shrinking the pill to dot + master; a
+    // wider terminal restores the pill's detail instead of taking it back.
+    assert_eq!(header_layout(&app, 110).pill, PillTier::Bare);
+    assert_eq!(header_layout(&app, 128).pill, PillTier::Full);
 }
 
 #[test]
@@ -362,36 +405,37 @@ fn header_menu_degrades_from_labels_to_icons_to_numbers() {
     app.panel = Panel::Dashboard;
     populate_sample_data(&mut app);
 
-    // Wide: number + icon + short title for every panel.
-    let out = render_app(&app, 160, 30);
-    let header = header_row(&out);
-    for (i, panel) in Panel::ALL.iter().enumerate() {
-        let label = format!(" {} {} {} ", i + 1, panel.icon(), panel.short_title());
-        assert!(
-            header.contains(&label),
-            "full tab {label:?} missing at width 160: {header:?}"
-        );
+    // Wide: number + icon + short title for every panel. Labels hold from 110
+    // upward because the pill gives up its own detail first.
+    for width in [110u16, 160] {
+        let out = render_app(&app, width, 30);
+        let header = header_row(&out);
+        for (i, panel) in Panel::ALL.iter().enumerate() {
+            let label = format!(" {} {} {} ", i + 1, panel.icon(), panel.short_title());
+            assert!(
+                header.contains(&label),
+                "full tab {label:?} missing at width {width}: {header:?}"
+            );
+        }
     }
 
     // Medium: icons and numbers, labels dropped.
-    let out = render_app(&app, 80, 30);
+    let out = render_app(&app, 100, 30);
     let header = header_row(&out);
-    assert!(!header.contains("Dash"), "labels should be gone at 80: {header:?}");
+    assert!(!header.contains("Dash"), "labels should be gone at 100: {header:?}");
     for panel in Panel::ALL {
         assert!(
             header.contains(panel.icon()),
-            "icon for {panel:?} missing at width 80: {header:?}"
+            "icon for {panel:?} missing at width 100: {header:?}"
         );
     }
 
-    // Narrow: numbers only. Without cluster data the pill is 36 cells, which
-    // leaves just enough room at 64 for the eight numbered tabs.
-    let bare = test_app();
-    let out = render_app(&bare, 64, 30);
+    // Narrow: below the icon floor only numbers remain.
+    let out = render_app(&app, 76, 30);
     let header = header_row(&out);
     assert!(
         !header.contains(Panel::Dashboard.icon()),
-        "icons should be gone at 64: {header:?}"
+        "icons should be gone at 76: {header:?}"
     );
     let tokens = header_tokens(header);
     for n in 1..=Panel::ALL.len() {
@@ -1104,7 +1148,7 @@ fn header_highlights_the_active_tab_only() {
 #[test]
 fn header_reports_disconnected_without_cluster_data() {
     let app = test_app();
-    let out = render_app(&app, 110, 30);
+    let out = render_app(&app, 160, 30);
     let header = header_row(&out);
     assert!(header.contains("disconnected"), "expected a disconnected state: {header:?}");
     assert!(header.contains(crate::ui::components::DOT_HOLLOW), "expected a hollow dot");
@@ -2078,8 +2122,9 @@ fn header_cluster_state_is_an_inline_badge() {
     app.panel = Panel::Dashboard;
     populate_sample_data(&mut app);
     let out = render_app(&app, 120, 30);
-    assert_badge_around(&out, "1 worker");
-    assert!(out.lines().any(|l| l.contains("master-1:8995")), "master missing");
+    // The pill shrinks at this width, but the dot and master stay inside it.
+    assert_badge_around(&out, "master-1:8995");
+    assert!(out.lines().any(|l| l.contains('↻')), "refresh missing");
 }
 
 #[test]
@@ -2259,7 +2304,10 @@ fn header_is_a_single_row_of_tabs_and_pill() {
             "panel {n} tab missing: {header:?}"
         );
     }
-    assert!(header.contains("1 worker"), "cluster pill missing: {header:?}");
+    assert!(
+        header.contains("master-1:8995"),
+        "cluster pill missing: {header:?}"
+    );
     assert!(
         !header.contains("curvine-tui"),
         "brand must leave the header: {header:?}"

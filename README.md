@@ -80,9 +80,10 @@ Options mirror the CLI's precedence rules (`--conf` > `CURVINE_CONF_FILE` > defa
 
 The UI is contextual: the header is the panel menu — each tab carries its
 number, icon and short name, the active tab is highlighted, and the cluster
-state (master, worker count, refresh countdown) stays pinned on the right. Tabs
-degrade from `n icon name` to `n icon` to `n` as the terminal narrows, before
-the cluster pill gives up a cell. The footer shows the keys for the current
+pill stays pinned on the right. Labels hold down to 110 columns because the
+pill sheds its own detail first (worker count, then the refresh timer, then
+everything but the health dot and master address), and tabs fall back to icons
+at 88 columns and numbers below that. The footer shows the keys for the current
 context, and `x` opens a menu with the same actions so nothing is hidden behind
 memorisation.
 
@@ -371,14 +372,25 @@ remove. The toast clears the cells it covers so text cannot bleed through, but
 paints no fill: its body keeps the terminal's default background.
 Status dots remain round by design, and `Tag` has no filled variant at all.
 
-The header is two groups: the panel menu on the left and the cluster badge on
+The header is two groups: the panel menu on the left and the cluster pill on
 the right, separated by at least one cell. The active tab is accent-bold on a
-subtle fill; inactive tabs are muted. The menu claims only the width left over
-after the pill is placed and degrades `n icon name` → `n icon` → `n`, so the
-cluster health badge always keeps its place. The brand lives in the help popup,
-not the header. When a panel's key hints do not fit, the footer falls back to a
-short generic line — `tab/1-8 panels · : cmd · ? help · q quit` — so switching
-panels is never undiscoverable. Empty tables are not left blank — Files
+subtle fill; inactive tabs are muted. Labels win at 110+ columns by shrinking
+the pill first:
+
+```
+● master · N workers · ↻Ns     full
+● master · Nw · ↻Ns            compact
+● master · ↻Ns                 minimal
+● master                       bare
+```
+
+The health dot and master address survive every tier, and the pill never
+disappears. Tabs drop to `n icon` at 88 columns and to `n` below that; if even
+numbers + bare cannot fit, the pill keeps its cells and the tabs clip. The
+brand lives in the help popup, not the header. When a panel's key hints do not
+fit, the footer falls back to a short generic line — `tab/1-8 panels · : cmd ·
+? help · q quit` — so switching panels is never undiscoverable. Empty tables
+are not left blank — Files
 says `empty directory` / `no matches`, Jobs says when session jobs will appear.
 Success and info messages stay in the footer badge and are capped at 45% of the
 footer width, so a long message can never push the key hints off-screen. Errors
