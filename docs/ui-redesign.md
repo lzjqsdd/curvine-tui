@@ -204,3 +204,39 @@ pill 需要 3 行高，因此以下带状区域从 1 行变为 3 行，内容居
 - 全屏 buffer 扫描：除 `SELECTED_BG` 的整行选中外，不存在任何非 `Reset`
   背景色（`no_filled_tag_backgrounds_remain`）。
 - 代码层：`Tag::solid` 已无定义、无调用点。
+
+## 11. 终审修订（实机截图反馈）
+
+### P0
+
+1. **header 分组**：左侧 = 标题 + 集群 pill（相邻 1 格），右侧 = 快捷键，
+   中间留白；pill 不再漂移。
+2. **Nodes 版本列**：`software_version` 形如
+   `0.2.2 (commit: 23315882, branch: main)`，列内显示
+   `0.2.2 (2331588)`（release + commit 前 7 位），列宽 17，超宽截断加 `…`。
+3. **owner 统一**：空 owner 列表显示 `-`；配对显示 `owner:group`，缺失一侧
+   用 `-`，任何情况下不出现裸 ` : `。列表、选中条、详情、describe 共用
+   `ui::owner_dash` / `ui::owner_group`。
+4. **标记与选中分离**：行首两列固定为"光标 + 标记"：
+   `▶●`（选中且标记）、` ●`（仅标记）、`▶ `（仅选中）、`  `。
+5. **Jobs summary 文案**：改为 `only jobs started in this session are listed`。
+6. **footer 状态 pill 上限**：最大宽度 = 带状区 45%，超出截断加 `…`，保证
+   右侧 hints 永不被挤出屏幕。
+
+### P1
+
+7. **x 菜单**：标题前缀当前选中项的类型图标（dir/file/worker…）；key 列
+   统一左对齐（`Del` 与单字符 key 的 label 同列）。
+8. **`:` 补全行**：最多展示前 3 个候选，`match: a · b · c`，多余加 `…`；
+   `Tab` 仍补全第一个。
+9. **Files 空态**：空目录居中显示 `empty directory`；有 filter 无匹配显示
+   `no matches`。
+10. **Jobs 空态**：居中显示 `load jobs submitted in this session will appear here`。
+11. **Dashboard footer hints**：明确包含 `↑↓ select` 与 `d detail`。
+12. Transfers 无选中时的 `no transfer selected` 保持不变。
+
+### 验证
+
+- `cargo test`：hermetic + `CURVINE_TUI_LIVE=1`（运行中的本地集群）全绿。
+- `cargo clippy --all-targets` 零警告。
+- README 键位表与 visual language 段落同步。

@@ -2,7 +2,7 @@
 //! a detail strip for the highlighted entry.
 
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Cell, Paragraph, Row, Table, TableState},
@@ -131,18 +131,26 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
             };
 
             let path = crate::app::join_path(&app.files.cwd, &e.name);
-            // A marked row keeps its `●` even while highlighted; only the
-            // unmarked selection uses the `▶` cursor.
-            let marker = if app.files.is_marked(&path) {
-                Span::styled("● ", Style::default().fg(th::WARN))
-            } else if idx == app.files.selected {
-                Span::styled("▶ ", Style::default().fg(th::ACCENT))
+            // Two fixed cells: the first is the cursor, the second the mark.
+            // A row can be both selected and marked, so `▶` must not be
+            // replaced by `●`; that would hide where the cursor is.
+            let selected = idx == app.files.selected;
+            let marked = app.files.is_marked(&path);
+            let cursor = if selected {
+                Span::styled("▶", Style::default().fg(th::ACCENT))
             } else {
-                Span::raw("  ")
+                Span::raw(" ")
+            };
+            let mark = if marked {
+                Span::styled("●", Style::default().fg(th::WARN))
+            } else {
+                Span::raw(" ")
             };
 
             let name_cell = Cell::from(Line::from(vec![
-                marker,
+                cursor,
+                mark,
+                Span::raw(" "),
                 Span::styled(format!("{glyph} "), Style::default().fg(if e.is_dir {
                     th::DIR
                 } else {
@@ -165,7 +173,8 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
                         .style(Style::default().fg(th::MUTED)),
                 );
                 cells.push(
-                    Cell::from(e.owner.clone()).style(Style::default().fg(th::MUTED)),
+                    Cell::from(crate::ui::owner_dash(&e.owner))
+                        .style(Style::default().fg(th::MUTED)),
                 );
             }
             cells.push(
@@ -204,6 +213,30 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
     }
     widths.push(Constraint::Length(6));
     let _ = medium;
+
+    if rows.is_empty() {
+        // An empty listing is a state, not a blank table: say why it is empty.
+        let block = components::panel_block(&title);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        if !app.files.load.loading && inner.height > 0 {
+            let msg = if app.files.filter.trim().is_empty() {
+                "empty directory"
+            } else {
+                "no matches"
+            };
+            f.render_widget(
+                Paragraph::new(Span::styled(msg, Style::default().fg(th::MUTED)))
+                    .alignment(Alignment::Center),
+                Rect {
+                    y: inner.y + inner.height / 2,
+                    height: 1,
+                    ..inner
+                },
+            );
+        }
+        return;
+    }
 
     let mut state = TableState::default();
     if !rows.is_empty() {
@@ -307,7 +340,7 @@ fn render_detail(f: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::raw("  "));
     }
     spans.push(Span::styled(
-        format!("{}:{}", e.owner, e.group),
+        crate::ui::owner_group(&e.owner, &e.group),
         Style::default().fg(th::MUTED),
     ));
     spans.push(Span::raw("  "));

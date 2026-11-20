@@ -1255,40 +1255,54 @@ impl App {
 
     // ------------------------------------------------------------ action menu
 
-    /// Short, stable name for the menu title: the current selection.
+    /// Short, stable name for the menu title: the current selection, prefixed
+    /// with its type glyph (directory / file / worker …).
     fn menu_subject(&self) -> String {
-        let raw = match self.panel {
-            Panel::Files => self
-                .files
-                .selected_entry()
-                .map(|e| e.name.clone())
-                .or_else(|| Some(self.files.cwd.clone())),
-            Panel::Nodes | Panel::Dashboard => self
-                .cluster
-                .data
-                .as_ref()
-                .and_then(|c| c.workers.get(self.node_selected))
-                .map(|w| w.address.clone()),
-            Panel::Mounts => self
-                .mounts
-                .data
-                .as_ref()
-                .and_then(|l| l.get(self.mount_selected))
-                .map(|m| m.cv_path.clone()),
-            Panel::Jobs => self
-                .jobs
-                .data
-                .as_ref()
-                .and_then(|l| l.get(self.job_selected))
-                .map(|j| j.job_id.clone()),
-            Panel::Transfers => self
-                .transfers
-                .get(self.transfer_selected)
-                .map(|t| format!("#{} {}", t.id, t.remote)),
-            Panel::Fsck => Some(self.fsck_path.clone()),
-            Panel::Bench => Some(self.bench_opts.base_path.clone()),
+        use crate::ui::icons;
+        let (glyph, raw) = match self.panel {
+            Panel::Files => match self.files.selected_entry() {
+                Some(e) if e.is_dir => (icons::DIR, e.name.clone()),
+                Some(e) => (icons::for_file(&e.name), e.name.clone()),
+                None => (icons::DIR_OPEN, self.files.cwd.clone()),
+            },
+            Panel::Nodes | Panel::Dashboard => (
+                icons::SERVER,
+                self.cluster
+                    .data
+                    .as_ref()
+                    .and_then(|c| c.workers.get(self.node_selected))
+                    .map(|w| w.address.clone())
+                    .unwrap_or_else(|| self.panel.title().to_string()),
+            ),
+            Panel::Mounts => (
+                icons::DIR_OPEN,
+                self.mounts
+                    .data
+                    .as_ref()
+                    .and_then(|l| l.get(self.mount_selected))
+                    .map(|m| m.cv_path.clone())
+                    .unwrap_or_else(|| self.panel.title().to_string()),
+            ),
+            Panel::Jobs => (
+                icons::LIST,
+                self.jobs
+                    .data
+                    .as_ref()
+                    .and_then(|l| l.get(self.job_selected))
+                    .map(|j| j.job_id.clone())
+                    .unwrap_or_else(|| self.panel.title().to_string()),
+            ),
+            Panel::Transfers => (
+                icons::LIST,
+                self.transfers
+                    .get(self.transfer_selected)
+                    .map(|t| format!("#{} {}", t.id, t.remote))
+                    .unwrap_or_else(|| self.panel.title().to_string()),
+            ),
+            Panel::Fsck => (icons::CUBES, self.fsck_path.clone()),
+            Panel::Bench => (icons::LIST, self.bench_opts.base_path.clone()),
         };
-        truncate_menu_title(raw.unwrap_or_else(|| self.panel.title().to_string()))
+        truncate_menu_title(format!("{glyph} {raw}"))
     }
 
     /// Contextual menu entries. This is the single place that encodes what an
@@ -2392,7 +2406,7 @@ impl App {
                 "mode".into(),
                 format!("{} ({:04o})", crate::ui::format_mode(entry.mode, entry.is_dir), entry.mode),
             ),
-            ("owner".into(), format!("{}:{}", entry.owner, entry.group)),
+            ("owner".into(), crate::ui::owner_group(&entry.owner, &entry.group)),
             (
                 "size".into(),
                 if entry.is_dir {

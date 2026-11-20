@@ -1395,29 +1395,39 @@ fn navigation_keeps_marks_and_escape_clears_them() {
 }
 
 #[test]
-fn marked_rows_show_the_filled_marker_instead_of_the_cursor() {
+fn selected_and_marked_rows_keep_both_indicators() {
     let mut app = test_app();
     app.panel = Panel::Files;
     populate_sample_data(&mut app);
     app.files.selected = 1;
     press(&mut app, crossterm::event::KeyCode::Char(' '));
 
-    let out = render_app(&app, 110, 20);
     let icon = crate::ui::icons::for_file("events.parquet");
+    let out = render_app(&app, 110, 20);
     assert!(
-        out.contains(&format!("● {icon} events.parquet")),
-        "marked row lacks the ● marker:\n{out}"
-    );
-    assert!(
-        !out.contains(&format!("▶ {icon} events.parquet")),
-        "marked row must not also show the selection cursor"
+        out.contains(&format!("▶● {icon} events.parquet")),
+        "selected+marked row must show both glyphs:\n{out}"
     );
 
-    // Unmarking restores the cursor on the selected row.
+    // Marking a different row leaves the cursor visible on the selected one
+    // and shows a leading mark on the unselected marked row.
+    app.files.selected = 0;
+    let out = render_app(&app, 110, 20);
+    assert!(
+        out.contains(&format!(" ● {icon} events.parquet")),
+        "unselected marked row must keep its mark:\n{out}"
+    );
+    assert!(
+        out.contains(&format!("▶  {} ", crate::ui::icons::DIR)),
+        "unselected-marked must not steal the cursor:\n{out}"
+    );
+
+    // Unmarking restores the plain cursor.
+    app.files.selected = 1;
     press(&mut app, crossterm::event::KeyCode::Char(' '));
     let out = render_app(&app, 110, 20);
     assert!(
-        out.contains(&format!("▶ {icon} events.parquet")),
+        out.contains(&format!("▶  {icon} events.parquet")),
         "unmarked selection lost its cursor:\n{out}"
     );
 }
@@ -2004,6 +2014,234 @@ fn no_filled_tag_backgrounds_remain() {
     populate_sample_data(&mut menu);
     press(&mut menu, crossterm::event::KeyCode::Char('x'));
     assert!(scan(&menu, 120, 34).is_empty(), "filled background in menu");
+}
+
+// ------------------------------------------------------------ review polish
+
+#[test]
+fn header_groups_title_and_cluster_pill_together() {
+    let mut app = test_app();
+    app.panel = Panel::Dashboard;
+    populate_sample_data(&mut app);
+    let out = render_app(&app, 120, 30);
+    let lines: Vec<&str> = out.lines().collect();
+    let idx = lines
+        .iter()
+        .position(|l| l.contains("1 worker"))
+        .expect("pill row");
+    let row: Vec<char> = lines[idx].chars().collect();
+    let title_byte = lines[idx].find("Dashboard").expect("title");
+    let title_end = lines[idx][..title_byte].chars().count() + "Dashboard".len();
+    let border = (title_end..row.len())
+        .find(|i| row[*i] == '│')
+        .expect("pill border");
+    assert!(
+        border.saturating_sub(title_end) <= 1,
+        "pill must sit next to the title (gap {}):\n{out}",
+        border.saturating_sub(title_end)
+    );
+    // The shortcut group stays on the right edge.
+    let hints_byte = lines[idx].find("1-8").expect("shortcut hint");
+    let hints = lines[idx][..hints_byte].chars().count();
+    assert!(hints > row.len() / 2, "shortcuts are not right-aligned: {hints}");
+}
+
+#[test]
+fn node_version_column_shows_release_and_short_commit() {
+    assert_eq!(
+        crate::ui::nodes::short_version("0.2.2 (commit: 23315882, branch: main)"),
+        "0.2.2 (2331588)"
+    );
+    assert_eq!(
+        crate::ui::nodes::short_version("0.2.2 (commit: 2331588)"),
+        "0.2.2 (2331588)"
+    );
+    assert_eq!(crate::ui::nodes::short_version("0.2.2"), "0.2.2");
+
+    let mut app = test_app();
+    app.panel = Panel::Nodes;
+    populate_sample_data(&mut app);
+    if let Some(c) = app.cluster.data.as_mut() {
+        c.workers[0].version = "0.2.2 (commit: 23315882, branch: main)".into();
+    }
+    let out = render_app(&app, 130, 22);
+    assert!(
+        out.contains("0.2.2 (2331588)"),
+        "short version missing:\n{out}"
+    );
+    assert!(!out.contains("commit:"), "raw build string leaked:\n{out}");
+}
+
+#[test]
+fn empty_owner_renders_as_a_dash_everywhere() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.entries[1].owner = String::new();
+    app.files.entries[1].group = "data".into();
+    app.files.selected = 1;
+
+    let out = render_app(&app, 120, 22);
+    assert!(out.contains("-:data"), "detail strip owner is malformed:\n{out}");
+
+    // The listing owner column is a single value and never blank; the owner
+    // pair must never render a bare separator.
+    let row = srow(&out, "events.parquet");
+    assert!(row.contains(" -"), "empty owner not dashed: {row:?}");
+    assert!(!row.contains(" : "), "bare ' : ' leaked: {row:?}");
+
+    // The full detail view uses the same pair formatting.
+    press(&mut app, crossterm::event::KeyCode::Char('d'));
+    let view = app.detail.as_ref().expect("detail");
+    let owner = view.rows.iter().find(|(k, _)| k == "owner").unwrap();
+    assert_eq!(owner.1, "-:data");
+}
+
+#[test]
+fn jobs_summary_describes_session_only_listing() {
+    let out = render_panel(Panel::Jobs, 120, 26, true);
+    assert!(
+        out.contains("only jobs started in this session are listed"),
+        "summary copy missing:\n{out}"
+    );
+    assert!(
+        !out.contains("stream progress from the job master"),
+        "stale summary copy still present"
+    );
+}
+
+#[test]
+fn footer_status_pill_is_capped_and_keeps_hints_visible() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.status_is_error = true;
+    app.status = "failed to read a very long remote path that goes on and on: /data/warehouse/part-0.bin (permission denied)".into();
+    app.anim.mark_status();
+
+    let width = 120u16;
+    let out = render_app(&app, width, 26);
+    let lines: Vec<&str> = out.lines().collect();
+    let idx = lines
+        .iter()
+        .position(|l| l.contains('…'))
+        .expect("status should be truncated");
+    let row: Vec<char> = lines[idx].chars().collect();
+    let close = row
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, c)| **c == '│')
+        .map(|(i, _)| i)
+        .expect("pill right border");
+    let cap = (width as usize * 45) / 100;
+    assert!(
+        close <= cap,
+        "status pill width {close} exceeds 45% cap {cap}:\n{out}"
+    );
+    assert!(
+        lines[idx].contains("x menu"),
+        "hints pushed out by a long status:\n{out}"
+    );
+}
+
+#[test]
+fn menu_title_carries_the_selection_glyph() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+
+    app.files.selected = 1; // events.parquet
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+    let title = app.menu.as_ref().unwrap().title.clone();
+    assert!(
+        title.starts_with(crate::ui::icons::for_file("events.parquet")),
+        "file glyph missing from menu title: {title:?}"
+    );
+    press(&mut app, crossterm::event::KeyCode::Esc);
+
+    app.files.selected = 0; // warehouse/
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+    let title = app.menu.as_ref().unwrap().title.clone();
+    assert!(
+        title.starts_with(crate::ui::icons::DIR),
+        "directory glyph missing from menu title: {title:?}"
+    );
+}
+
+#[test]
+fn menu_key_column_is_left_aligned() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 1;
+    press(&mut app, crossterm::event::KeyCode::Char('x'));
+
+    let out = render_app(&app, 120, 30);
+    let label_col = |needle: &str| -> usize {
+        let line = out
+            .lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no row with {needle}:\n{out}"));
+        line.find(needle).expect("label")
+    };
+    assert_eq!(
+        label_col("detail"),
+        label_col("refresh"),
+        "menu labels do not share a column:\n{out}"
+    );
+}
+
+#[test]
+fn completion_row_shows_the_first_three_candidates() {
+    let mut app = test_app();
+    press(&mut app, crossterm::event::KeyCode::Char(':'));
+    type_str(&mut app, "m");
+    let out = render_app(&app, 110, 30);
+    let hint = out.lines().nth_back(3).unwrap_or_default();
+    assert!(
+        hint.contains("match: mkdir · mv · mount"),
+        "completion row format wrong: {hint:?}"
+    );
+}
+
+#[test]
+fn empty_file_listing_explains_itself() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    app.files.entries.clear();
+    let out = render_app(&app, 100, 24);
+    assert!(out.contains("empty directory"), "empty state missing:\n{out}");
+
+    populate_sample_data(&mut app);
+    app.files.filter = "nothing-matches-this".into();
+    let out = render_app(&app, 100, 24);
+    assert!(out.contains("no matches"), "filter state missing:\n{out}");
+}
+
+#[test]
+fn empty_jobs_listing_explains_itself() {
+    let mut app = test_app();
+    app.panel = Panel::Jobs;
+    let out = render_app(&app, 110, 24);
+    assert!(
+        out.contains("load jobs submitted in this session will appear here"),
+        "jobs empty state missing:\n{out}"
+    );
+}
+
+#[test]
+fn dashboard_footer_names_worker_selection_and_detail() {
+    let mut app = test_app();
+    app.panel = Panel::Dashboard;
+    populate_sample_data(&mut app);
+    let out = render_app(&app, 120, 26);
+    let footer = out
+        .lines()
+        .find(|l| l.contains("x menu"))
+        .unwrap_or_default();
+    assert!(footer.contains("↑↓ select"), "selection hint missing: {footer:?}");
+    assert!(footer.contains("d detail"), "detail hint missing: {footer:?}");
 }
 
 // ---------------------------------------------------------------- pure helpers

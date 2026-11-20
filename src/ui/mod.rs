@@ -154,13 +154,16 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         app.refresh_countdown_secs()
     );
 
+    // Left group: identity then the cluster pill, one cell apart. Right group:
+    // the shortcut hint. Everything between them stays empty.
     let hints = "1-8 switch  ·  : command";
     let hints_w = hints.chars().count() as u16;
     let badge_w = components::pill_width(&badge);
-    let pill_x = (identity_w as u16).saturating_add(2);
+    let identity_w = identity_w.min(area.width as usize) as u16;
+    let pill_x = identity_w.saturating_add(1);
+    let left_w = pill_x.saturating_add(badge_w);
 
-    let hints_fit =
-        area.width > hints_w && area.right().saturating_sub(hints_w) > pill_x + badge_w + 1;
+    let hints_fit = area.width > hints_w && area.right().saturating_sub(hints_w) > left_w + 1;
     if hints_fit {
         f.render_widget(
             Paragraph::new(Span::styled(hints, Style::default().fg(th::MUTED))),
@@ -172,7 +175,7 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         );
     }
 
-    if pill_x + badge_w <= area.width {
+    if left_w <= area.width {
         components::pill(
             f,
             Rect {
@@ -250,12 +253,15 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let (text, color) = status_pill(app);
-    let max_w = if hints_fit {
+    let available = if hints_fit {
         area.right().saturating_sub(hints_w + 2)
     } else {
         area.width
     };
-    // Keep the pill inside the band even when the message is long.
+    // A long error must never push the hints off-screen: the status pill is
+    // capped at 45% of the band, and the message is clipped with an ellipsis.
+    let cap = ((area.width as u32 * 45) / 100) as u16;
+    let max_w = available.min(cap.max(16));
     let max_chars = max_w.saturating_sub(4) as usize;
     let text: String = if text.chars().count() > max_chars {
         let mut clipped: String = text.chars().take(max_chars.saturating_sub(1)).collect();
@@ -316,17 +322,20 @@ fn render_command_hint(f: &mut Frame, app: &App, area: Rect) {
         ));
     } else {
         spans.push(Span::styled(
-            "match  ",
+            "match: ",
             Style::default().fg(th::MUTED),
         ));
-        for (i, cmd) in matches.iter().enumerate() {
+        for (i, cmd) in matches.iter().take(3).enumerate() {
             if i > 0 {
-                spans.push(Span::raw("  "));
+                spans.push(Span::styled(" · ", Style::default().fg(th::BORDER)));
             }
             spans.push(Span::styled(
                 (*cmd).to_string(),
                 Style::default().fg(th::ACCENT),
             ));
+        }
+        if matches.len() > 3 {
+            spans.push(Span::styled(" …", Style::default().fg(th::BORDER)));
         }
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -415,6 +424,31 @@ pub fn format_mtime(ms: i64) -> String {
                 .to_string()
         })
         .unwrap_or_else(|| "-".to_string())
+}
+
+/// Owner column value: an empty owner renders as a dash, never as a gap.
+pub fn owner_dash(owner: &str) -> String {
+    let owner = owner.trim();
+    if owner.is_empty() {
+        "-".to_string()
+    } else {
+        owner.to_string()
+    }
+}
+
+/// `owner:group` with dashes for missing halves, so a bare ` : ` (or a
+/// dangling `:`) can never reach the screen.
+pub fn owner_group(owner: &str, group: &str) -> String {
+    let owner = owner.trim();
+    let group = group.trim();
+    if owner.is_empty() && group.is_empty() {
+        return "-".to_string();
+    }
+    format!(
+        "{}:{}",
+        if owner.is_empty() { "-" } else { owner },
+        if group.is_empty() { "-" } else { group }
+    )
 }
 
 pub fn format_mode(mode: u32, is_dir: bool) -> String {

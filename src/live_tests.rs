@@ -322,10 +322,7 @@ fn live_header_files_and_menus_work_against_the_cluster() {
     assert!(out.contains(&root), "breadcrumb path missing:\n{out}");
     assert!(out.contains(&name), "seeded file missing:\n{out}");
     assert!(out.contains("repl"), "replica column missing:\n{out}");
-    let crumb = out
-        .lines()
-        .find(|l| l.contains("1/1"))
-        .unwrap_or_default();
+    let crumb = out.lines().find(|l| l.contains("1/1")).unwrap_or_default();
     assert!(crumb.contains("1/1"), "visible/total missing:\n{out}");
 
     // Every panel opens a menu with at least one executable action.
@@ -850,6 +847,79 @@ fn live_load_job_is_tracked_and_shown_in_jobs() {
         String::from_utf8_lossy(&umount.stdout),
         String::from_utf8_lossy(&umount.stderr)
     );
+}
+
+#[test]
+fn live_command_completion_history_and_panel_jumps() {
+    skip_unless_live!();
+    let Some(mut live) = Live::start() else {
+        return;
+    };
+    live.wait_cluster();
+
+    // Completion row (three rows above the bottom footer band) + Tab completes
+    // the first prefix match.
+    live.key(KeyCode::Char(':'));
+    live.text("l");
+    let screen = live.render(120, 30);
+    let hint = screen.lines().nth_back(3).unwrap_or_default();
+    assert!(hint.contains("match: ls"), "completion row: {hint:?}");
+    live.key(KeyCode::Tab);
+    assert_eq!(live.app.command, "ls ");
+    live.key(KeyCode::Esc);
+
+    // A real command, then history recall.
+    let (root, _) = seed(&live, "cmd", 4096);
+    let cd = format!("cd {root}");
+    live.command(&cd);
+    assert!(
+        live.wait_for(Duration::from_secs(30), |a| {
+            a.files.cwd == root && !a.files.load.loading
+        }),
+        "cd did not land: {}",
+        live.app.status
+    );
+    assert_eq!(live.app.command_history.last(), Some(&cd));
+    live.key(KeyCode::Char(':'));
+    live.key(KeyCode::Up);
+    assert_eq!(live.app.command, cd);
+    live.key(KeyCode::Esc);
+
+    // Panel switch by command, rendered from live data.
+    live.command("panel nodes");
+    assert_eq!(live.app.panel, Panel::Nodes);
+    live.wait_cluster();
+    let endpoint = live.app.cluster.data.as_ref().unwrap().workers[0]
+        .address
+        .clone();
+    let version = live.app.cluster.data.as_ref().unwrap().workers[0]
+        .version
+        .clone();
+    let out = live.render(130, 30);
+    assert!(out.contains(&endpoint), "node endpoint:\n{out}");
+    assert!(out.contains("disk used"), "node occupancy label:\n{out}");
+    let expected = crate::ui::nodes::short_version(&version);
+    assert!(
+        out.contains(&expected),
+        "short version {expected:?} missing for {version:?}:\n{out}"
+    );
+    assert!(!out.contains("commit:"), "raw build string leaked:\n{out}");
+
+    live.key(KeyCode::Char('d'));
+    let view = live.app.detail.as_ref().expect("worker detail");
+    assert!(
+        view.rows.iter().any(|(k, _)| k == "capacity"),
+        "worker detail rows missing"
+    );
+    assert!(
+        live.render(120, 34).contains("storage classes"),
+        "worker storage breakdown missing"
+    );
+    live.key(KeyCode::Char('3'));
+    assert!(live.app.detail.is_none());
+    assert_eq!(live.app.panel, Panel::Nodes);
+
+    cleanup(&live, &root);
 }
 
 #[test]

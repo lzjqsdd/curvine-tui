@@ -100,8 +100,32 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// Render the worker's full build string as `release (short-commit)`.
+///
+/// Workers report e.g. `0.2.2 (commit: 23315882, branch: main)`. Seven commit
+/// characters are enough to identify a build and keep the column meaningful.
+pub(crate) fn short_version(full: &str) -> String {
+    let release = full.split_whitespace().next().unwrap_or("").trim();
+    let commit = full
+        .split("commit:")
+        .nth(1)
+        .and_then(|rest| {
+            rest.split(|c: char| !c.is_ascii_hexdigit())
+                .find(|t| t.len() >= 7)
+        });
+    let short = match commit {
+        Some(c) if !release.is_empty() => format!("{release} ({})", &c[..7]),
+        _ => release.to_string(),
+    };
+    if short.chars().count() > 17 {
+        format!("{}…", short.chars().take(16).collect::<String>())
+    } else {
+        short
+    }
+}
+
 fn render_table(f: &mut Frame, app: &App, area: Rect) {
-    let wide = area.width >= 84;
+    let wide = area.width >= 112;
 
     let mut header_cells = vec![
         Cell::from("  ip"),
@@ -150,7 +174,7 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
                         cells.push(Cell::from(human_bytes(w.capacity)));
                         cells.push(Cell::from(w.block_num.to_string()));
                         cells.push(
-                            Cell::from(w.version.clone())
+                            Cell::from(short_version(&w.version))
                                 .style(Style::default().fg(th::MUTED)),
                         );
                     }
@@ -173,18 +197,18 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let mut widths = vec![
-        Constraint::Length(24),
+        Constraint::Length(22),
         Constraint::Length(10),
-        Constraint::Length(15),
-        Constraint::Length(10),
+        Constraint::Length(13),
+        Constraint::Length(9),
     ];
     if wide {
-        widths.push(Constraint::Length(10));
-        widths.push(Constraint::Length(10));
-        widths.push(Constraint::Length(8));
-        widths.push(Constraint::Length(10));
+        widths.push(Constraint::Length(9)); // free
+        widths.push(Constraint::Length(9)); // capacity
+        widths.push(Constraint::Length(8)); // blocks
+        widths.push(Constraint::Length(17)); // version: "0.2.2 (2331588)"
     }
-    widths.push(Constraint::Length(7));
+    widths.push(Constraint::Length(7)); // weight
 
     let mut state = TableState::default();
     if !rows.is_empty() {

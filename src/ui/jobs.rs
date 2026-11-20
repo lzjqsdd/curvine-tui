@@ -1,7 +1,7 @@
 //! Job list — table-driven with badges.
 
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Cell, Paragraph, Row, Table, TableState},
@@ -91,6 +91,29 @@ fn render_jobs_table(f: &mut Frame, app: &App, area: Rect) {
     widths.push(Constraint::Percentage(28));
     widths.push(Constraint::Min(20));
 
+    if rows.is_empty() {
+        let block = components::panel_block(&title);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        if !app.jobs.loading && inner.height > 0 {
+            let msg = app
+                .jobs
+                .error
+                .as_deref()
+                .unwrap_or("load jobs submitted in this session will appear here");
+            f.render_widget(
+                Paragraph::new(Span::styled(msg, Style::default().fg(th::MUTED)))
+                    .alignment(Alignment::Center),
+                Rect {
+                    y: inner.y + inner.height / 2,
+                    height: 1,
+                    ..inner
+                },
+            );
+        }
+        return;
+    }
+
     let mut state = TableState::default();
     if !rows.is_empty() {
         state.select(Some(app.job_selected.min(rows.len() - 1)));
@@ -140,7 +163,7 @@ fn render_jobs_summary(f: &mut Frame, app: &App, area: Rect) {
         spans.extend(counter(Tone::Error, failed, "failed"));
         spans.push(Span::raw("   "));
         spans.push(Span::styled(
-            "load jobs stream progress from the job master",
+            "only jobs started in this session are listed",
             Style::default().fg(th::MUTED),
         ));
     } else {

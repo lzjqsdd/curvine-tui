@@ -112,7 +112,9 @@ hidden behind memorisation.
 | `p` / `g` | upload / download (put / get form) |
 
 With entries marked, the menu offers batch delete/free; the confirmation states
-the number of marked items.
+the number of marked items. A row can be both selected and marked: the cursor
+and the mark are separate columns (`▶●`, ` ●`, `▶ `), so marking a row never
+hides where the cursor is.
 
 ### Per panel
 
@@ -128,8 +130,8 @@ the number of marked items.
 
 In a full-screen detail view, `esc`/`q` returns and `1`–`8`/`tab` switches panel.
 The command table is `ls cd mkdir rm mv put get mount umount load fsck bench
-panel refresh help quit` (plus `cancel`); suggestions appear above the footer
-while typing.
+panel refresh help quit` (plus `cancel`); the three best prefix matches appear
+above the footer while typing, and `tab` completes to the first one.
 
 ## Architecture
 
@@ -344,7 +346,8 @@ Panels share one widget vocabulary so the UI reads consistently:
 | **Input / Choice / Toggle** | the three form control styles used by the mount and transfer forms. |
 | **Badged panel title** | `mounts — 3 entries  [2 stale]` — plain coloured text inside the border title, since a title line cannot host a pill. |
 | **Rounded borders** | every panel and dialog uses `BorderType::Rounded`. |
-| **Nerd Font icons** | per-file-extension glyphs in the listing, per-panel glyphs in the context header. Purely decorative: nothing depends on them semantically. |
+| **Nerd Font icons** | per-file-extension glyphs in the listing, per-panel glyphs in the context header, and the selected item's glyph in the action menu title. Purely decorative: nothing depends on them semantically. |
+| **Value formatting** | owner columns never render as a bare separator: an empty owner is `-`, and the paired form is `owner:group` with `-` for a missing half. The Nodes version column shows `release (7-char commit)` instead of the worker's full build string. |
 
 Every panel also reserves a bottom strip for selection detail or queue counters,
 so the same shape repeats across Files, Mounts, Transfers and Fsck. Header,
@@ -355,6 +358,12 @@ Nothing in the UI paints a solid rectangular background behind text. Row
 selection is the one exception (a full-row highlight), and status dots remain
 round by design. `Tag` has no filled variant at all, so a rectangular badge
 cannot creep back in.
+
+The header is two groups: identity + cluster pill on the left, shortcut hint on
+the right, with empty space between. Empty tables are not left blank — Files
+says `empty directory` / `no matches`, Jobs says when session jobs will appear.
+A status message is capped at 45% of the footer width, so a long error can never
+push the key hints off-screen.
 
 ### Two things the UI deliberately does not claim
 
