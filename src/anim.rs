@@ -194,6 +194,11 @@ pub const STATUS_HOLD: Duration = Duration::from_millis(4000);
 /// Fade duration after the hold.
 pub const STATUS_FADE: Duration = Duration::from_millis(1200);
 
+/// How long an error toast stays fully opaque before it starts fading.
+pub const TOAST_HOLD: Duration = Duration::from_millis(4000);
+/// Fade duration after the hold.
+pub const TOAST_FADE: Duration = Duration::from_millis(1200);
+
 /// All animated values the UI owns.
 ///
 /// Kept in one struct so the main loop can ask a single question — "is anything
@@ -216,6 +221,10 @@ pub struct AnimState {
 
     /// When the current status message was set.
     status_at: Option<Instant>,
+    /// Age of the visible error toast. Advanced by [`AnimState::step`] rather
+    /// than read from the wall clock, so expiry is a function of rendered
+    /// frames and tests can drive it without sleeping.
+    toast_age: Option<Duration>,
 }
 
 impl Default for AnimState {
@@ -244,6 +253,7 @@ impl AnimState {
             workers: c(0.0),
             transfers: HashMap::new(),
             status_at: None,
+            toast_age: None,
         }
     }
 
@@ -275,6 +285,23 @@ impl AnimState {
             .unwrap_or(false)
     }
 
+    /// Start (or restart) the toast clock. Called every time an error is set,
+    /// including a repeat of the message already on screen.
+    pub fn mark_toast(&mut self) {
+        self.toast_age = Some(Duration::ZERO);
+    }
+
+    pub fn clear_toast_mark(&mut self) {
+        self.toast_age = None;
+    }
+
+    /// True once the toast has fully faded and should be dropped.
+    pub fn toast_expired(&self) -> bool {
+        self.toast_age
+            .map(|age| age > TOAST_HOLD + TOAST_FADE)
+            .unwrap_or(false)
+    }
+
     /// Track a transfer's progress spring, creating it at `initial` on first
     /// sight so new rows do not animate up from zero.
     pub fn transfer(&mut self, id: u64, initial: f64) -> &mut Spring {
@@ -291,6 +318,12 @@ impl AnimState {
 
     /// Advance every spring. Returns true while anything is still moving.
     pub fn step(&mut self, dt: Duration) -> bool {
+        // The toast clock advances even under reduced motion: the fade is then
+        // skipped by the frame governor, but expiry must still happen.
+        if let Some(age) = self.toast_age.as_mut() {
+            *age += dt;
+        }
+
         if self.reduced {
             for s in [
                 &mut self.capacity,
@@ -330,7 +363,14 @@ impl AnimState {
         if self.reduced {
             return false;
         }
-        self.capacity.is_animating()
+        // A fading toast needs smooth frames; during the hold it can wait for
+        // the idle tick and still expire on time.
+        let toast_fading = self
+            .toast_age
+            .map(|age| age > TOAST_HOLD && age <= TOAST_HOLD + TOAST_FADE)
+            .unwrap_or(false);
+        toast_fading
+            || self.capacity.is_animating()
             || self.health.is_animating()
             || self.dirs.is_animating()
             || self.files.is_animating()

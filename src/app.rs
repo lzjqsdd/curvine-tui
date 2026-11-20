@@ -477,6 +477,15 @@ impl TransferForm {
     }
 }
 
+/// One error alert. Repeats of the same message bump `count` instead of
+/// replacing the toast, so a panel whose refresh keeps failing does not make
+/// the banner flicker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Toast {
+    pub text: String,
+    pub count: u32,
+}
+
 pub struct App {
     pub cfg: AppConfig,
     pub client: ClusterClient,
@@ -489,6 +498,9 @@ pub struct App {
 
     pub status: String,
     pub status_is_error: bool,
+    /// The active error alert. Errors never enter the footer; they surface
+    /// here as a bottom-centred toast that any input dismisses.
+    pub toast: Option<Toast>,
 
     /// Configured auto-refresh interval, and the moment the next tick lands.
     /// The header renders the remaining seconds as a countdown.
@@ -558,6 +570,7 @@ impl App {
             should_quit: false,
             status: String::new(),
             status_is_error: false,
+            toast: None,
             refresh_secs,
             next_refresh: Instant::now() + std::time::Duration::from_secs(refresh_secs),
             files: FilesState::default(),
@@ -628,9 +641,35 @@ impl App {
         } else {
             msg.clone()
         });
+
+        if is_error {
+            let same = self.toast.as_ref().is_some_and(|t| t.text == msg);
+            if same {
+                if let Some(toast) = self.toast.as_mut() {
+                    toast.count = toast.count.saturating_add(1);
+                }
+            } else {
+                self.toast = Some(Toast { text: msg, count: 1 });
+            }
+            self.anim.mark_toast();
+            // Errors belong to the toast; clearing keeps the footer from
+            // showing a stale success message under the alert.
+            self.status.clear();
+            self.status_is_error = false;
+            return;
+        }
+
         self.status = msg;
-        self.status_is_error = is_error;
+        self.status_is_error = false;
         self.anim.mark_status();
+    }
+
+    /// Hide the error toast. Called before dispatching any key or mouse event:
+    /// the event itself still performs its normal action.
+    pub fn dismiss_toast(&mut self) {
+        if self.toast.take().is_some() {
+            self.anim.clear_toast_mark();
+        }
     }
 
     // ------------------------------------------------------------- refreshers
@@ -891,9 +930,14 @@ impl App {
 
     pub fn on_event(&mut self, evt: AppEvent) {
         match evt {
-            AppEvent::Key(k) => self.on_key(k),
+            AppEvent::Key(k) => {
+                // Any key dismisses an alert, but must still do its own job —
+                // `r` both clears the toast and refreshes the panel.
+                self.dismiss_toast();
+                self.on_key(k);
+            }
             AppEvent::Resize(_, _) => {}
-            AppEvent::Mouse(_) => {}
+            AppEvent::Mouse(_) => self.dismiss_toast(),
             AppEvent::Frame(dt) => self.on_frame(dt),
             AppEvent::Tick => {
                 self.next_refresh =
@@ -954,6 +998,10 @@ impl App {
             self.status.clear();
             self.status_is_error = false;
             self.anim.clear_status_mark();
+        }
+        if self.anim.toast_expired() {
+            self.toast = None;
+            self.anim.clear_toast_mark();
         }
     }
 

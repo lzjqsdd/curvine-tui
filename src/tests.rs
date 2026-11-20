@@ -35,6 +35,7 @@ fn test_app() -> App {
         should_quit: false,
         status: String::new(),
         status_is_error: false,
+        toast: None,
         refresh_secs: 5,
         next_refresh: std::time::Instant::now() + std::time::Duration::from_secs(5),
         files: FilesState::default(),
@@ -701,7 +702,15 @@ fn deleting_a_directory_without_recursion_is_refused() {
     )));
 
     assert!(app.confirm.is_none(), "must not offer a non-recursive delete");
-    assert!(app.status.contains("D"), "expected a hint about D: {}", app.status);
+    // The refusal is an error, so it surfaces as a toast rather than in the
+    // footer; the hint still names the recursive key.
+    let toast = app.toast.as_ref().expect("refusal must raise a toast");
+    assert!(
+        toast.text.contains("D"),
+        "expected a hint about D: {}",
+        toast.text
+    );
+    assert!(app.status.is_empty(), "errors must not enter the footer");
 }
 
 /// Drive frames until every animation settles, so assertions see the final
