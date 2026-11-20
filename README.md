@@ -78,9 +78,13 @@ Options mirror the CLI's precedence rules (`--conf` > `CURVINE_CONF_FILE` > defa
 
 ## Keybindings
 
-The UI is contextual: the header names the active panel, the footer shows the
-keys for that context, and `x` opens a menu with the same actions so nothing is
-hidden behind memorisation.
+The UI is contextual: the header is the panel menu — each tab carries its
+number, icon and short name, the active tab is highlighted, and the cluster
+state (master, worker count, refresh countdown) stays pinned on the right. Tabs
+degrade from `n icon name` to `n icon` to `n` as the terminal narrows, before
+the cluster pill gives up a cell. The footer shows the keys for the current
+context, and `x` opens a menu with the same actions so nothing is hidden behind
+memorisation.
 
 ### Global
 
@@ -351,7 +355,7 @@ Panels share one widget vocabulary so the UI reads consistently:
 | **Input / Choice / Toggle** | the three form control styles used by the mount and transfer forms. |
 | **Badged panel title** | `unhealthy files — 2 ◖ action needed ◗` — the badge lives inside the border title, which is a single line of text. |
 | **Rounded borders** | every panel and dialog uses `BorderType::Rounded`. |
-| **Nerd Font icons** | per-file-extension glyphs in the listing, per-panel glyphs in the context header, and the selected item's glyph in the action menu title. Purely decorative: nothing depends on them semantically. |
+| **Nerd Font icons** | per-file-extension glyphs in the listing, per-panel glyphs in the header menu, and the selected item's glyph in the action menu title. Purely decorative: nothing depends on them semantically. |
 | **Value formatting** | owner columns never render as a bare separator: an empty owner is `-`, and the paired form is `owner:group` with `-` for a missing half. The Nodes version column shows `release (7-char commit)` instead of the worker's full build string. |
 
 Every panel also reserves a bottom strip for selection detail or queue counters,
@@ -359,15 +363,22 @@ so the same shape repeats across Files, Mounts, Transfers and Fsck. Header,
 footer and the selection strips are single-row bands: a badge occupies exactly
 its text height, so no band reserves rows for borders.
 
-The only filled backgrounds in the UI are badge interiors and the full-row
-selection highlight. A badge's background is exactly as wide as `◖ text ◗` and
-stops at the caps, so it can never grow into the solid rectangle this style
-exists to remove. The toast clears the cells it covers so text cannot bleed
-through, but paints no fill: its body keeps the terminal's default background.
+The only filled backgrounds in the UI are badge interiors, the full-row
+selection highlight, and the active tab in the header menu (a subtle underlay,
+not a block). A badge's background is exactly as wide as `◖ text ◗` and stops
+at the caps, so it can never grow into the solid rectangle this style exists to
+remove. The toast clears the cells it covers so text cannot bleed through, but
+paints no fill: its body keeps the terminal's default background.
 Status dots remain round by design, and `Tag` has no filled variant at all.
 
-The header is two groups: identity + cluster badge on the left, shortcut hint on
-the right, with empty space between. Empty tables are not left blank — Files
+The header is two groups: the panel menu on the left and the cluster badge on
+the right, separated by at least one cell. The active tab is accent-bold on a
+subtle fill; inactive tabs are muted. The menu claims only the width left over
+after the pill is placed and degrades `n icon name` → `n icon` → `n`, so the
+cluster health badge always keeps its place. The brand lives in the help popup,
+not the header. When a panel's key hints do not fit, the footer falls back to a
+short generic line — `tab/1-8 panels · : cmd · ? help · q quit` — so switching
+panels is never undiscoverable. Empty tables are not left blank — Files
 says `empty directory` / `no matches`, Jobs says when session jobs will appear.
 Success and info messages stay in the footer badge and are capped at 45% of the
 footer width, so a long message can never push the key hints off-screen. Errors
