@@ -3,7 +3,7 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
-    text::{Line, Span},
+    text::Span,
     widgets::{Cell, Paragraph, Row, Table},
     Frame,
 };
@@ -28,6 +28,9 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_config(f: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
     let o = &app.bench_opts;
     let profile = match o.profile {
         curvine_bench::BenchProfile::Basic => "basic",
@@ -38,38 +41,49 @@ fn render_config(f: &mut Frame, app: &App, area: Rect) {
         .map(|d| format!("{}s", d / 1000))
         .unwrap_or_else(|| "∞".to_string());
 
-    let state = if let Some(started) = app.bench_running {
-        Tag::solid(
-            format!(" {} running {}s ", components::live_spinner(), started.elapsed().as_secs()),
+    // Knobs and run state are badges, so they are pills. The bordered strip is
+    // gone: a rounded box around a rounded box would read as noise.
+    let state: (String, Tone) = if let Some(started) = app.bench_running {
+        (
+            format!("{} running {}s", components::live_spinner(), started.elapsed().as_secs()),
             Tone::Accent,
         )
     } else if app.bench.error.is_some() {
-        Tag::solid("failed", Tone::Error)
+        ("failed".to_string(), Tone::Error)
     } else if app.bench.data.is_some() {
-        Tag::solid("done", Tone::Ok)
+        ("done".to_string(), Tone::Ok)
     } else {
-        Tag::new("idle", Tone::Neutral)
+        ("idle".to_string(), Tone::Neutral)
     };
 
-    let spans = vec![
-        Span::raw(" "),
-        Span::styled("profile ", Style::default().fg(th::MUTED)),
-        Tag::new(profile, Tone::Info).span(),
-        Span::raw(" "),
-        Span::styled("threads ", Style::default().fg(th::MUTED)),
-        Tag::new(o.threads.to_string(), Tone::Neutral).span(),
-        Span::raw(" "),
-        Span::styled("duration ", Style::default().fg(th::MUTED)),
-        Tag::new(duration, Tone::Neutral).span(),
-        Span::raw("  "),
-        state.span(),
+    let base = format!("base {}", o.base_path);
+    let base_w = base.chars().count() as u16 + 2;
+    let badges = vec![
+        (format!("profile {profile}"), Tone::Info),
+        (format!("threads {}", o.threads), Tone::Neutral),
+        (format!("duration {duration}"), Tone::Neutral),
+        state,
     ];
-
-    f.render_widget(
-        Paragraph::new(Line::from(spans))
-            .block(components::panel_block(&format!("bench — {}", o.base_path))),
-        area,
+    let avail = area.width.saturating_sub(if base_w + 2 < area.width { base_w + 2 } else { 0 });
+    components::pills(
+        f,
+        Rect {
+            width: avail,
+            ..area
+        },
+        &badges,
     );
+    if base_w + 2 < area.width {
+        f.render_widget(
+            Paragraph::new(Span::styled(base, Style::default().fg(th::MUTED))),
+            Rect {
+                x: area.right() - base_w,
+                y: area.y + area.height.saturating_sub(1) / 2,
+                width: base_w,
+                height: 1,
+            },
+        );
+    }
 }
 
 fn render_results(f: &mut Frame, app: &App, area: Rect) {

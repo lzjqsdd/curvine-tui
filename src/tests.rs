@@ -346,7 +346,7 @@ fn header_identifies_the_active_panel_at_narrow_widths() {
     let last = *Panel::ALL.last().unwrap();
     for width in [40u16, 60, 80, 100, 120] {
         let out = render_panel(last, width, 30, false);
-        let header = out.lines().next().unwrap_or_default();
+        let header = srow(&out, "❖ curvine-tui");
         assert!(
             header.contains("❖ curvine-tui"),
             "identity missing from header at width {width}: {header:?}"
@@ -565,6 +565,12 @@ fn umount_confirm_renders_target_path() {
 }
 
 // --------------------------------------------------------------- new chrome
+
+/// First rendered row containing `needle`, or "" when absent. Chrome bands now
+/// span three rows, so tests locate content by what it says, not by index.
+fn srow<'a>(out: &'a str, needle: &str) -> &'a str {
+    out.lines().find(|l| l.contains(needle)).unwrap_or_default()
+}
 
 fn render_app(app: &App, w: u16, h: u16) -> String {
     let backend = TestBackend::new(w, h);
@@ -836,7 +842,8 @@ fn file_detail_renders_blocks_and_distribution() {
     });
 
     let out = render_app(&app, 120, 34);
-    assert!(out.contains("file events.parquet"), "detail title missing:\n{out}");
+    assert!(srow(&out, "file").contains("file"), "detail badge missing:\n{out}");
+    assert!(out.contains("/data/events.parquet"), "detail subject missing:\n{out}");
     assert!(out.contains("blocks by offset"), "block table missing");
     assert!(out.contains("distribution by worker"), "distribution table missing");
     assert!(out.contains("1/2"), "replica availability missing");
@@ -950,7 +957,7 @@ fn header_shows_the_active_panel_icon_and_context() {
     app.panel = Panel::Files;
     populate_sample_data(&mut app);
     let out = render_app(&app, 118, 30);
-    let header = out.lines().next().unwrap_or_default();
+    let header = srow(&out, "❖ curvine-tui");
     assert!(
         header.contains("❖ curvine-tui"),
         "product identity missing: {header:?}"
@@ -971,7 +978,7 @@ fn header_shows_the_active_panel_icon_and_context() {
 fn header_reports_disconnected_without_cluster_data() {
     let app = test_app();
     let out = render_app(&app, 110, 30);
-    let header = out.lines().next().unwrap_or_default();
+    let header = srow(&out, "disconnected");
     assert!(header.contains("disconnected"), "expected a disconnected state: {header:?}");
     assert!(header.contains(crate::ui::components::DOT_HOLLOW), "expected a hollow dot");
 }
@@ -983,14 +990,20 @@ fn footer_merges_status_and_context_hints() {
     populate_sample_data(&mut app);
     app.set_status_for_test("saved 12 files");
     let out = render_app(&app, 120, 30);
-    let footer = out.lines().last().unwrap_or_default();
+    // The same text also appears in the recent-events log, so look only in the
+    // three-row footer band.
+    let footer = out
+        .lines()
+        .rev()
+        .take(3)
+        .find(|l| l.contains("saved 12 files"))
+        .unwrap_or_default();
     assert!(footer.contains("saved 12 files"), "status missing from footer: {footer:?}");
     assert!(footer.contains("x menu"), "panel hints missing from footer: {footer:?}");
-    // The old separate status/hint rows are gone: the last two lines are the
-    // footer and something from panel content, not a second chrome row.
+    // Status and hints still share one row; the band around them is the pill.
     assert!(
-        !out.lines().nth_back(1).unwrap_or_default().contains("saved 12 files"),
-        "status must not occupy its own row above the footer"
+        footer.contains('│'),
+        "status must be wrapped in a pill: {footer:?}"
     );
 }
 
@@ -1418,7 +1431,7 @@ fn breadcrumb_reports_visible_total_and_marked_counts() {
     app.files.marked = vec!["/data/events.parquet".to_string()];
 
     let out = render_app(&app, 110, 20);
-    let crumb = out.lines().nth(1).unwrap_or_default();
+    let crumb = srow(&out, "/data");
     assert!(crumb.contains("/data"), "path missing: {crumb:?}");
     assert!(crumb.contains("1/2"), "visible/total missing: {crumb:?}");
     assert!(crumb.contains("1 marked"), "marked count missing: {crumb:?}");
@@ -1746,15 +1759,15 @@ fn command_completion_row_lists_matches_and_no_match_marker() {
     press(&mut app, crossterm::event::KeyCode::Char(':'));
     type_str(&mut app, "l");
     let out = render_app(&app, 110, 30);
-    let hint = out.lines().nth_back(1).unwrap_or_default();
-    let footer = out.lines().last().unwrap_or_default();
+    let hint = out.lines().nth_back(3).unwrap_or_default();
+    let footer = out.lines().nth_back(1).unwrap_or_default();
     assert!(hint.contains("ls"), "completion row missing ls: {hint:?}");
     assert!(hint.contains("load"), "completion row missing load: {hint:?}");
     assert!(footer.contains(":l"), "command input missing from footer: {footer:?}");
 
     type_str(&mut app, "zz");
     let out = render_app(&app, 110, 30);
-    let hint = out.lines().nth_back(1).unwrap_or_default();
+    let hint = out.lines().nth_back(3).unwrap_or_default();
     assert!(
         hint.contains("✗ no matching command"),
         "no-match marker missing: {hint:?}"
@@ -1810,10 +1823,13 @@ fn footer_keeps_context_hints_at_narrow_widths() {
     app.panel = Panel::Files;
     populate_sample_data(&mut app);
     let out = render_app(&app, 60, 24);
-    let footer = out.lines().last().unwrap_or_default();
+    let footer = out
+        .lines()
+        .find(|l| l.contains("x menu") || l.contains("space mark"))
+        .unwrap_or_default();
     assert!(
-        footer.contains("x menu") || footer.contains("space mark"),
-        "context hints dropped at 60 columns: {footer:?}"
+        !footer.is_empty(),
+        "context hints dropped at 60 columns:\n{out}"
     );
 }
 
@@ -1842,6 +1858,152 @@ fn menu_and_detail_survive_pathological_sizes() {
         press(&mut app, crossterm::event::KeyCode::Char('d'));
         render_app(&app, w, h);
     }
+}
+
+// ------------------------------------------------------------------- pills
+
+/// Assert the text at `needle` sits inside a rounded pill: vertical borders on
+/// its own row, rounded corners on the rows directly above and below.
+fn assert_pill_around(out: &str, needle: &str) {
+    let lines: Vec<&str> = out.lines().collect();
+    let idx = lines
+        .iter()
+        .position(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("no row containing {needle:?}:\n{out}"));
+    let row: Vec<char> = lines[idx].chars().collect();
+    let top: Vec<char> = lines
+        .get(idx.wrapping_sub(1))
+        .map(|l| l.chars().collect())
+        .unwrap_or_default();
+    let bottom: Vec<char> = lines
+        .get(idx + 1)
+        .map(|l| l.chars().collect())
+        .unwrap_or_default();
+
+    let x = lines[idx]
+        .chars()
+        .collect::<String>()
+        .find(needle)
+        .map(|b| lines[idx][..b].chars().count())
+        .expect("needle");
+
+    let left = (0..x)
+        .rev()
+        .find(|i| top.get(*i) == Some(&'╭'))
+        .unwrap_or_else(|| panic!("no top-left corner above {needle:?}:\n{out}"));
+    let right = (x..top.len())
+        .find(|i| top.get(*i) == Some(&'╮'))
+        .unwrap_or_else(|| panic!("no top-right corner above {needle:?}:\n{out}"));
+    assert_eq!(row.get(left), Some(&'│'), "left border missing for {needle:?}:\n{out}");
+    assert_eq!(row.get(right), Some(&'│'), "right border missing for {needle:?}:\n{out}");
+    assert_eq!(bottom.get(left), Some(&'╰'), "bottom-left corner missing for {needle:?}:\n{out}");
+    assert_eq!(bottom.get(right), Some(&'╯'), "bottom-right corner missing for {needle:?}:\n{out}");
+}
+
+#[test]
+fn header_cluster_state_is_a_rounded_pill() {
+    let mut app = test_app();
+    app.panel = Panel::Dashboard;
+    populate_sample_data(&mut app);
+    let out = render_app(&app, 120, 30);
+    assert_pill_around(&out, "1 worker");
+    assert!(out.lines().any(|l| l.contains("master-1:8995")), "master missing");
+}
+
+#[test]
+fn panel_badges_are_rounded_pills() {
+    let mut app = test_app();
+    app.panel = Panel::Mounts;
+    populate_sample_data(&mut app);
+    let out = render_app(&app, 120, 30);
+    assert_pill_around(&out, "id 2");
+    assert_pill_around(&out, "ttl ∞");
+
+    let mut bench = test_app();
+    bench.panel = Panel::Bench;
+    populate_sample_data(&mut bench);
+    let out = render_app(&bench, 120, 30);
+    assert_pill_around(&out, "profile basic");
+    assert_pill_around(&out, "done");
+
+    // Files: type badge and the breadcrumb count.
+    let mut files = test_app();
+    files.panel = Panel::Files;
+    populate_sample_data(&mut files);
+    let out = render_app(&files, 120, 30);
+    assert_pill_around(&out, "directory");
+    assert_pill_around(&out, "2/2");
+}
+
+#[test]
+fn dialog_keycaps_and_help_badge_are_rounded_pills() {
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 1;
+    press(&mut app, crossterm::event::KeyCode::Delete);
+    let out = render_app(&app, 120, 32);
+    assert_pill_around(&out, "enter");
+    assert_pill_around(&out, "esc");
+
+    let mut help = test_app();
+    help.help_visible = true;
+    let out = render_app(&help, 120, 40);
+    assert_pill_around(&out, "8 panels");
+}
+
+#[test]
+fn no_filled_tag_backgrounds_remain() {
+    use ratatui::style::Color;
+
+    // Row selection is the only allowed filled background; every badge must be
+    // a rounded pill, so any other non-reset background is a regression.
+    let allowed = [Color::Reset, crate::ui::theme::SELECTED_BG];
+    let scan = |app: &App, w: u16, h: u16| -> Vec<(u16, u16, Color)> {
+        let backend = TestBackend::new(w, h);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut hits = Vec::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let bg = buf[(x, y)].bg;
+                if !allowed.contains(&bg) {
+                    hits.push((x, y, bg));
+                }
+            }
+        }
+        hits
+    };
+
+    for panel in Panel::ALL {
+        let mut app = test_app();
+        app.panel = panel;
+        populate_sample_data(&mut app);
+        let hits = scan(&app, 120, 34);
+        assert!(
+            hits.is_empty(),
+            "filled background on {panel:?}: {hits:?}"
+        );
+    }
+
+    // Dialog, help and menu are separate render paths.
+    let mut app = test_app();
+    app.panel = Panel::Files;
+    populate_sample_data(&mut app);
+    app.files.selected = 1;
+    press(&mut app, crossterm::event::KeyCode::Delete);
+    assert!(scan(&app, 120, 34).is_empty(), "filled background in confirm");
+
+    let mut help = test_app();
+    help.help_visible = true;
+    assert!(scan(&help, 120, 40).is_empty(), "filled background in help");
+
+    let mut menu = test_app();
+    menu.panel = Panel::Nodes;
+    populate_sample_data(&mut menu);
+    press(&mut menu, crossterm::event::KeyCode::Char('x'));
+    assert!(scan(&menu, 120, 34).is_empty(), "filled background in menu");
 }
 
 // ---------------------------------------------------------------- pure helpers
@@ -2047,7 +2209,8 @@ fn detail_view_is_complete_on_the_first_frame() {
     press(&mut app, crossterm::event::KeyCode::Char('d'));
 
     let first = render_app(&app, 116, 30);
-    assert!(first.contains("file events.parquet"), "title missing:\n{first}");
+    assert!(srow(&first, "file").contains("file"), "title badge missing:\n{first}");
+    assert!(first.contains("events.parquet"), "title missing:\n{first}");
     assert!(first.contains("mode"), "detail rows missing");
     assert!(first.contains("blocks by offset"), "block table missing");
     assert!(first.contains("distribution by worker"), "distribution table missing");

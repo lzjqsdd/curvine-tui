@@ -138,35 +138,59 @@ fn storage_tag(s: &str) -> Tag {
 }
 
 fn render_selected(f: &mut Frame, app: &App, area: Rect) {
-    let line = match app.mounts.data.as_ref().and_then(|l| l.get(app.mount_selected)) {
-        Some(m) => Line::from(vec![
-            Span::styled(" selected ", Style::default().fg(th::MUTED)),
-            Tag::new(m.cv_path.clone(), Tone::Info).span(),
-            Span::styled(" ← ", Style::default().fg(th::BORDER)),
-            Span::styled(m.ufs_path.clone(), Style::default().fg(th::TEXT)),
-            Span::raw("  "),
-            Tag::new(format!("id {}", m.mount_id), Tone::Neutral).span(),
-            Span::raw(" "),
-            components::dot(Tone::Ok),
-            Span::styled(" mounted", Style::default().fg(th::MUTED)),
-            Span::raw(" "),
-            Tag::new(format!("ttl {}", if m.ttl_ms > 0 { m.ttl_ms / 1000 } else { 0 }), Tone::Neutral)
-                .span(),
-            if m.storage_type.is_empty() {
-                Span::raw("")
-            } else {
-                Tag::new(m.storage_type.clone(), Tone::Accent).span()
+    if area.height == 0 {
+        return;
+    }
+    let Some(m) = app.mounts.data.as_ref().and_then(|l| l.get(app.mount_selected)) else {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                " n new mount   u unmount   r refresh — no mount selected",
+                Style::default().fg(th::MUTED),
+            )),
+            Rect {
+                y: area.y + area.height.saturating_sub(1) / 2,
+                height: 1,
+                ..area
             },
-        ]),
-        None => Line::from(Span::styled(
-            " n new mount   u unmount   r refresh — no mount selected",
-            Style::default().fg(th::MUTED),
-        )),
+        );
+        return;
     };
 
+    // Pills for the mount identity, then the UFS side as plain text.
+    let mut items: Vec<(String, Tone)> = vec![
+        (m.cv_path.clone(), Tone::Info),
+        (format!("id {}", m.mount_id), Tone::Neutral),
+        (
+            format!(
+                "ttl {}",
+                if m.ttl_ms > 0 {
+                    format!("{}s", m.ttl_ms / 1000)
+                } else {
+                    "∞".to_string()
+                }
+            ),
+            Tone::Neutral,
+        ),
+    ];
+    if !m.storage_type.is_empty() {
+        items.push((m.storage_type.clone(), Tone::Accent));
+    }
+    let used = components::pills(f, area, &items);
+    let mid = Rect {
+        y: area.y + area.height.saturating_sub(1) / 2,
+        height: 1,
+        x: used,
+        width: area.right().saturating_sub(used),
+    };
     f.render_widget(
-        Paragraph::new(line).block(components::panel_block("selected")),
-        area,
+        Paragraph::new(Line::from(vec![
+            Span::styled("← ", Style::default().fg(th::BORDER)),
+            Span::styled(m.ufs_path.clone(), Style::default().fg(th::TEXT)),
+            Span::raw("  "),
+            components::dot(Tone::Ok),
+            Span::styled(" mounted", Style::default().fg(th::MUTED)),
+        ])),
+        mid,
     );
 }
 
@@ -196,10 +220,10 @@ fn render_form(f: &mut Frame, form: &MountForm, area: Rect) {
 
     if let Some(err) = &form.error {
         lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Tag::solid("error", Tone::Error).span(),
-            Span::styled(format!(" {err}"), Style::default().fg(th::ERROR)),
-        ]));
+        lines.push(Line::from(Span::styled(
+            format!("  error: {err}"),
+            Style::default().fg(th::ERROR),
+        )));
     }
 
     f.render_widget(

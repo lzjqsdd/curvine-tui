@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Cell, Clear, Gauge, Paragraph, Row, Table, TableState},
+    widgets::{Cell, Clear, Paragraph, Row, Table, TableState},
     Frame,
 };
 
@@ -218,12 +218,9 @@ fn render_active_gauge(f: &mut Frame, app: &App, area: Rect) {
         .get(&t.id)
         .map(|s| s.ratio())
         .unwrap_or_else(|| t.ratio());
-    let g = Gauge::default()
-        .block(components::panel_block("current"))
-        .gauge_style(Style::default().fg(th::ACCENT).add_modifier(Modifier::BOLD))
-        .ratio(eased)
-        .label(Span::styled(label, Style::default().fg(th::TEXT)));
-    f.render_widget(g, area);
+    // No `Gauge`: its label renders as a filled block. A block-character bar
+    // with a centred label over it keeps every cell background-free.
+    components::render_bar_block(f, area, "current", eased, label, Tone::Accent);
 }
 
 fn render_counters(f: &mut Frame, app: &App, area: Rect) {
@@ -290,13 +287,24 @@ fn render_form(f: &mut Frame, form: &TransferForm, area: Rect) {
 
     let mut lines = vec![
         Line::from(""),
-        Line::from(vec![Span::raw("  "), Tag::solid(
-            match form.kind {
-                TransferKind::Upload => "PUT",
-                TransferKind::Download => "GET",
-            },
-            tone,
-        ).span()]),
+        Line::from(vec![
+            Span::raw("  "),
+            Tag::new(
+                match form.kind {
+                    TransferKind::Upload => "put",
+                    TransferKind::Download => "get",
+                },
+                tone,
+            )
+            .span(),
+            Span::styled(
+                match form.kind {
+                    TransferKind::Upload => " streams a local file into Curvine",
+                    TransferKind::Download => " streams a Curvine file to local disk",
+                },
+                Style::default().fg(th::MUTED),
+            ),
+        ]),
         Line::from(""),
         section("paths"),
         input_line(local_label, &form.local, form.focus == 0, false),
@@ -305,11 +313,10 @@ fn render_form(f: &mut Frame, form: &TransferForm, area: Rect) {
     ];
 
     if let Some(err) = &form.error {
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Tag::solid("error", Tone::Error).span(),
-            Span::styled(format!(" {err}"), Style::default().fg(th::ERROR)),
-        ]));
+        lines.push(Line::from(Span::styled(
+            format!("  error: {err}"),
+            Style::default().fg(th::ERROR),
+        )));
     } else {
         let hint = match form.kind {
             TransferKind::Upload => "streams from the local file in write_chunk_size slices",

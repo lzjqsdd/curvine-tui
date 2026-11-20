@@ -10,7 +10,7 @@ use ratatui::{
 };
 
 use super::{
-    components::{self, bar, Tag, Tone},
+    components::{self, bar, Tone},
     format_mode, format_mtime, human_bytes,
     icons,
     theme as th,
@@ -21,9 +21,9 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // breadcrumb (borderless)
+            Constraint::Length(3), // breadcrumb band (badges are pills)
             Constraint::Min(4),    // listing
-            Constraint::Length(1), // selected entry detail (borderless)
+            Constraint::Length(3), // selected entry band (badges are pills)
         ])
         .split(area);
 
@@ -33,6 +33,30 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_breadcrumb(f: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    // Status badges on the right, path on the left; both share the middle row
+    // of the band so the pills' borders stay clear of each other.
+    let mut right: Vec<(String, Tone)> = Vec::new();
+    if !app.files.filter.is_empty() {
+        right.push((format!("filter {}", app.files.filter), Tone::Warn));
+    }
+    if !app.files.show_hidden {
+        right.push(("hidden off".to_string(), Tone::Neutral));
+    }
+    let visible = app.files.visible().len();
+    let total = app.files.entries.len();
+    right.push((format!("{visible}/{total}"), Tone::Neutral));
+    if !app.files.marked.is_empty() {
+        right.push((
+            format!("{} marked", app.files.marked.len()),
+            Tone::Warn,
+        ));
+    }
+    let right_w = components::pills_width(&right);
+    components::pills_end(f, area, &right);
+
     let mut spans = vec![
         Span::raw(" "),
         Span::styled(
@@ -46,34 +70,6 @@ fn render_breadcrumb(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
     ];
-
-    let mut right: Vec<Span> = Vec::new();
-    if !app.files.filter.is_empty() {
-        right.push(Tag::new(format!("filter {}", app.files.filter), Tone::Warn).span());
-        right.push(Span::raw(" "));
-    }
-    if !app.files.show_hidden {
-        right.push(Tag::new("hidden off", Tone::Neutral).span());
-        right.push(Span::raw(" "));
-    }
-    let visible = app.files.visible().len();
-    let total = app.files.entries.len();
-    right.push(Tag::new(format!("{visible}/{total}"), Tone::Neutral).span());
-    if !app.files.marked.is_empty() {
-        right.push(Span::raw(" "));
-        right.push(Tag::new(
-            format!("{} marked", app.files.marked.len()),
-            Tone::Warn,
-        ).span());
-    }
-    right.push(Span::raw(" "));
-
-    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-    let right_w: usize = right.iter().map(|s| s.content.chars().count()).sum();
-    let pad = (area.width as usize).saturating_sub(used + right_w);
-    spans.push(Span::raw(" ".repeat(pad)));
-    spans.extend(right);
-
     if app.files.load.loading {
         spans.push(Span::styled(
             format!(" {}", components::live_spinner()),
@@ -83,7 +79,18 @@ fn render_breadcrumb(f: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled(" !", Style::default().fg(th::ERROR)));
     }
 
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
+    let width = area
+        .width
+        .saturating_sub(right_w + if right_w > 0 { 2 } else { 0 });
+    f.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect {
+            y: area.y + area.height.saturating_sub(1) / 2,
+            width,
+            height: 1,
+            ..area
+        },
+    );
 }
 
 fn render_table(f: &mut Frame, app: &App, area: Rect) {
@@ -232,86 +239,114 @@ fn replica_cell(replicas: i32, is_dir: bool) -> Cell<'static> {
 }
 
 fn render_detail(f: &mut Frame, app: &App, area: Rect) {
-    let line = match app.files.selected_entry() {
-        Some(e) => {
-            let size_ratio = if e.is_dir || e.len == 0 {
-                0.0
-            } else {
-                (e.len as f64 / (1024.0 * 1024.0 * 1024.0)).clamp(0.02, 1.0)
-            };
-            let mut spans = vec![
-                Span::raw(" "),
-                Span::styled(
-                    format!("{} ", if e.is_dir { icons::DIR } else { icons::for_file(&e.name) }),
-                    Style::default().fg(if e.is_dir { th::DIR } else { th::MUTED }),
-                ),
-                Tag::new(
-                    if e.is_dir { "directory" } else { "file" },
-                    if e.is_dir { Tone::Info } else { Tone::Neutral },
-                )
-                .span(),
-                Span::raw(" "),
-                Span::styled(
-                    format_mode(e.mode, e.is_dir),
-                    Style::default().fg(th::ACCENT),
-                ),
-                Span::raw("  "),
-            ];
-
-            if !e.is_dir {
-                spans.push(Span::styled(
-                    bar(size_ratio, 10),
-                    Style::default().fg(th::usage_tone(size_ratio).color()),
-                ));
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(
-                    human_bytes(e.len),
-                    Style::default().fg(th::TEXT),
-                ));
-                spans.push(Span::raw("  "));
-            }
-
-            spans.push(Span::styled(
-                format!("{}:{}", e.owner, e.group),
+    if area.height == 0 {
+        return;
+    }
+    let Some(e) = app.files.selected_entry() else {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                " no entry selected",
                 Style::default().fg(th::MUTED),
-            ));
-            spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                format_mtime(e.mtime),
-                Style::default().fg(th::MUTED),
-            ));
-            if e.replicas > 0 && !e.is_dir {
-                spans.push(Span::raw("  "));
-                spans.push(components::dot(Tone::Info));
-                spans.push(Span::styled(
-                    format!(" {} replicas (configured)", e.replicas),
-                    Style::default().fg(th::MUTED),
-                ));
-            }
-            // The hint is right-aligned so it survives long owner/mtime
-            // values; drop trailing detail spans rather than clipping it.
-            let hint = Span::styled("x menu ", Style::default().fg(th::BORDER));
-            let width = area.width as usize;
-            let mut used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-            while used + hint.content.chars().count() + 1 > width && spans.len() > 1 {
-                if let Some(last) = spans.pop() {
-                    used = used.saturating_sub(last.content.chars().count());
-                }
-            }
-            used = spans.iter().map(|s| s.content.chars().count()).sum();
-            spans.push(Span::raw(
-                " ".repeat(width.saturating_sub(used + hint.content.chars().count()).max(1)),
-            ));
-            spans.push(hint);
-            Line::from(spans)
-        }
-        None => Line::from(Span::styled(
-            " no entry selected",
-            Style::default().fg(th::MUTED),
-        )),
+            )),
+            Rect {
+                y: area.y + area.height.saturating_sub(1) / 2,
+                height: 1,
+                ..area
+            },
+        );
+        return;
     };
 
-    // The selected-entry strip is a single information line, so it has no
-    // border and shares the visual language of the breadcrumb.
-    f.render_widget(Paragraph::new(line), area);
+    // The type is a badge, so it is a pill; the rest of the row is plain text.
+    let kind = if e.is_dir { "directory" } else { "file" };
+    let kind_tone = if e.is_dir { Tone::Info } else { Tone::Neutral };
+    let pill_rect = components::pill(
+        f,
+        Rect {
+            x: area.x + 1,
+            width: area.width.saturating_sub(1),
+            ..area
+        },
+        kind,
+        kind_tone,
+    );
+
+    let size_ratio = if e.is_dir || e.len == 0 {
+        0.0
+    } else {
+        (e.len as f64 / (1024.0 * 1024.0 * 1024.0)).clamp(0.02, 1.0)
+    };
+    let mut spans = vec![
+        Span::styled(
+            format!(
+                "{} ",
+                if e.is_dir {
+                    icons::DIR
+                } else {
+                    icons::for_file(&e.name)
+                }
+            ),
+            Style::default().fg(if e.is_dir { th::DIR } else { th::MUTED }),
+        ),
+        Span::styled(
+            format_mode(e.mode, e.is_dir),
+            Style::default().fg(th::ACCENT),
+        ),
+        Span::raw("  "),
+    ];
+    if !e.is_dir {
+        spans.push(Span::styled(
+            bar(size_ratio, 10),
+            Style::default().fg(th::usage_tone(size_ratio).color()),
+        ));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            human_bytes(e.len),
+            Style::default().fg(th::TEXT),
+        ));
+        spans.push(Span::raw("  "));
+    }
+    spans.push(Span::styled(
+        format!("{}:{}", e.owner, e.group),
+        Style::default().fg(th::MUTED),
+    ));
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(
+        format_mtime(e.mtime),
+        Style::default().fg(th::MUTED),
+    ));
+    if e.replicas > 0 && !e.is_dir {
+        spans.push(Span::raw("  "));
+        spans.push(components::dot(Tone::Info));
+        spans.push(Span::styled(
+            format!(" {} replicas (configured)", e.replicas),
+            Style::default().fg(th::MUTED),
+        ));
+    }
+    let hint = "x menu ".to_string();
+    let hint_w = hint.chars().count() as u16;
+    let details_x = pill_rect.right().saturating_add(1);
+    let avail = area
+        .right()
+        .saturating_sub(details_x)
+        .saturating_sub(hint_w + 1);
+
+    f.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect {
+            x: details_x,
+            y: area.y + area.height.saturating_sub(1) / 2,
+            width: avail,
+            height: 1,
+        },
+    );
+    f.render_widget(
+        Paragraph::new(Span::styled(hint, Style::default().fg(th::BORDER))),
+        Rect {
+            x: area.right().saturating_sub(hint_w),
+            y: area.y + area.height.saturating_sub(1) / 2,
+            width: hint_w,
+            height: 1,
+        },
+    );
 }

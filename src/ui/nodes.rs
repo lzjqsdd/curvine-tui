@@ -13,7 +13,7 @@ use ratatui::{
 };
 
 use super::{
-    components::{self, bar_with_pct, Tag, Tone},
+    components::{self, bar_with_pct, Tone},
     human_bytes, icons, ratio,
     theme as th,
 };
@@ -31,15 +31,31 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let mid = Rect {
+        y: area.y + area.height.saturating_sub(1) / 2,
+        height: 1,
+        ..area
+    };
     let mut spans = vec![
         Span::raw(" "),
         Span::styled(format!("{} ", icons::CUBES), Style::default().fg(th::ACCENT)),
     ];
 
+    let badge = app.cluster.data.as_ref().map(|c| {
+        let total_blocks: i64 = c.workers.iter().map(|w| w.block_num).sum();
+        format!("{total_blocks} blocks")
+    });
+    let badge_w = badge
+        .as_ref()
+        .map(|b| components::pill_width(b) + 2)
+        .unwrap_or(0);
+
     if let Some(c) = &app.cluster.data {
         let total_cap: i64 = c.workers.iter().map(|w| w.capacity).sum();
         let total_used: i64 = c.workers.iter().map(|w| w.fs_used).sum();
-        let total_blocks: i64 = c.workers.iter().map(|w| w.block_num).sum();
         let r = ratio(total_used, total_cap.max(1));
 
         spans.push(components::dot(if c.workers.is_empty() {
@@ -61,8 +77,6 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
             format!("{} / {}", human_bytes(total_used), human_bytes(total_cap)),
             Style::default().fg(th::TEXT),
         ));
-        spans.push(Span::raw("  "));
-        spans.push(Tag::new(format!("{total_blocks} blocks"), Tone::Neutral).span());
     } else {
         spans.push(Span::styled(
             if app.cluster.loading {
@@ -75,9 +89,15 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
     }
 
     f.render_widget(
-        Paragraph::new(Line::from(spans)).block(components::panel_block("cluster workers")),
-        area,
+        Paragraph::new(Line::from(spans)),
+        Rect {
+            width: area.width.saturating_sub(badge_w),
+            ..mid
+        },
     );
+    if let Some(badge) = badge {
+        components::pills_end(f, area, &[(badge, Tone::Neutral)]);
+    }
 }
 
 fn render_table(f: &mut Frame, app: &App, area: Rect) {
@@ -182,51 +202,84 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_detail(f: &mut Frame, app: &App, area: Rect) {
-    let line = match app
+    if area.height == 0 {
+        return;
+    }
+    let mid = Rect {
+        y: area.y + area.height.saturating_sub(1) / 2,
+        height: 1,
+        ..area
+    };
+    let Some(w) = app
         .cluster
         .data
         .as_ref()
         .and_then(|c| c.workers.get(app.node_selected))
-    {
-        Some(w) => {
-            let r = ratio(w.fs_used, w.capacity.max(1));
-            Line::from(vec![
-                Span::raw(" "),
-                Span::styled(format!("{} ", icons::SERVER), Style::default().fg(th::DIR)),
-                Span::styled(w.address.clone(), Style::default().fg(th::TEXT)),
-                Span::raw("  "),
-                components::dot(components::tone_for_status(&w.status)),
-                Span::raw(" "),
-                Span::styled(
-                    w.status.clone(),
-                    Style::default().fg(components::tone_for_status(&w.status).color()),
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    format!("{} blocks", w.block_num),
-                    Style::default().fg(th::MUTED),
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    format!("disk {:.0}%", r * 100.0),
-                    Style::default().fg(th::usage_tone(r).color()),
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    format!("weight {}", w.weight),
-                    Style::default().fg(th::MUTED),
-                ),
-                Span::styled("   d describe", Style::default().fg(th::BORDER)),
-            ])
-        }
-        None => Line::from(Span::styled(
-            " no worker selected — press d to describe",
-            Style::default().fg(th::MUTED),
-        )),
+    else {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                " no worker selected — press d to describe",
+                Style::default().fg(th::MUTED),
+            )),
+            Rect {
+                width: area.width,
+                ..mid
+            },
+        );
+        return;
     };
 
+    // State is a status badge, so it gets a pill; the metrics stay plain.
+    let tone = components::tone_for_status(&w.status);
+    let pill_rect = components::pill(
+        f,
+        Rect {
+            x: area.x + 1,
+            width: area.width.saturating_sub(1),
+            ..area
+        },
+        format!("● {}", w.status),
+        tone,
+    );
+    let r = ratio(w.fs_used, w.capacity.max(1));
+    let hint = "d detail ";
+    let hint_w = hint.chars().count() as u16;
+    let x = pill_rect.right().saturating_add(1);
     f.render_widget(
-        Paragraph::new(line).block(components::panel_block("selected")),
-        area,
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{} ", icons::SERVER),
+                Style::default().fg(th::DIR),
+            ),
+            Span::styled(w.address.clone(), Style::default().fg(th::TEXT)),
+            Span::raw("  "),
+            Span::styled(
+                format!("{} blocks", w.block_num),
+                Style::default().fg(th::MUTED),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                format!("disk {:.0}%", r * 100.0),
+                Style::default().fg(th::usage_tone(r).color()),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                format!("weight {}", w.weight),
+                Style::default().fg(th::MUTED),
+            ),
+        ])),
+        Rect {
+            x,
+            width: area.right().saturating_sub(x + hint_w + 1),
+            ..mid
+        },
+    );
+    f.render_widget(
+        Paragraph::new(Span::styled(hint, Style::default().fg(th::BORDER))),
+        Rect {
+            x: area.right().saturating_sub(hint_w),
+            width: hint_w,
+            ..mid
+        },
     );
 }

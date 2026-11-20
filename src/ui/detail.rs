@@ -10,7 +10,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Cell, Row, Table},
+    widgets::{Cell, Paragraph, Row, Table},
     Frame,
 };
 
@@ -86,23 +86,54 @@ fn render_kv(f: &mut Frame, view: &DetailView, area: Rect) {
         .max()
         .unwrap_or(8)
         + 2;
-    let mut lines: Vec<Line> = Vec::new();
+    let block = components::panel_block(&view.title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut top = inner.y;
     if let Some((tag, subject)) = &view.headline {
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Tag::solid(tag.clone(), Tone::Info).span(),
-            Span::raw(" "),
-            Span::styled(subject.clone(), Style::default().fg(th::ACCENT)),
-        ]));
-    }
-    for (key, value) in &view.rows {
-        lines.push(kv_line(key, value.clone(), value_tone(key, value), label_w));
+        let pill_rect = components::pill(
+            f,
+            Rect {
+                x: inner.x + 1,
+                width: inner.width.saturating_sub(1),
+                y: inner.y,
+                height: inner.height.min(3),
+            },
+            tag.clone(),
+            Tone::Info,
+        );
+        if pill_rect.height >= 3 {
+            f.render_widget(
+                Paragraph::new(Span::styled(
+                    subject.clone(),
+                    Style::default()
+                        .fg(th::ACCENT)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Rect {
+                    x: pill_rect.right().saturating_add(1),
+                    y: pill_rect.y + 1,
+                    width: inner.right().saturating_sub(pill_rect.right() + 1),
+                    height: 1,
+                },
+            );
+        }
+        top = pill_rect.bottom();
     }
 
+    let lines: Vec<Line> = view
+        .rows
+        .iter()
+        .map(|(key, value)| kv_line(key, value.clone(), value_tone(key, value), label_w))
+        .collect();
     f.render_widget(
-        ratatui::widgets::Paragraph::new(lines)
-            .block(components::panel_block(&view.title)),
-        area,
+        ratatui::widgets::Paragraph::new(lines),
+        Rect {
+            y: top,
+            height: inner.bottom().saturating_sub(top),
+            ..inner
+        },
     );
 }
 

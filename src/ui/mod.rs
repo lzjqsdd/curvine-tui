@@ -34,10 +34,10 @@ pub fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // header
+            Constraint::Length(3), // header band (the cluster badge is a pill)
             Constraint::Min(3),    // main area
             Constraint::Length(command_hint), // command completions
-            Constraint::Length(1), // footer
+            Constraint::Length(3), // footer band
         ])
         .split(f.area());
 
@@ -78,10 +78,21 @@ pub fn render(f: &mut Frame, app: &App) {
     }
 }
 
-/// One-line, borderless context header: identity + panel on the left, cluster
-/// state in the middle, navigation hint on the right.
+/// Context header: identity + panel on the left, the cluster state as a rounded
+/// pill, and navigation hints on the right. The band is three rows tall because
+/// a one-line rounded box needs a top border, the content row and a bottom
+/// border; everything else in the band stays borderless.
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
-    let left = vec![
+    if area.height == 0 {
+        return;
+    }
+    let mid = Rect {
+        y: area.y + area.height.saturating_sub(1) / 2,
+        height: 1,
+        ..area
+    };
+
+    let identity = vec![
         Span::styled(
             " ❖ curvine-tui",
             Style::default()
@@ -96,22 +107,41 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
     ];
+    let identity_w: usize = identity.iter().map(|s| s.content.chars().count()).sum();
+    f.render_widget(
+        Paragraph::new(Line::from(identity)),
+        Rect {
+            width: (identity_w as u16).min(area.width),
+            ..mid
+        },
+    );
 
-    let (dot_tone, cluster_text) = match (&app.cluster.data, &app.cluster.error) {
+    let (dot_glyph, cluster_text, tone) = match (&app.cluster.data, &app.cluster.error) {
         (Some(c), _) => {
-            let tone = if c.workers.is_empty() { Tone::Warn } else { Tone::Ok };
+            let tone = if c.workers.is_empty() {
+                Tone::Warn
+            } else {
+                Tone::Ok
+            };
             let master = if c.active_master.is_empty() {
                 "connected".to_string()
             } else {
                 c.active_master.clone()
             };
-            (tone, master)
+            (components::DOT, master, tone)
         }
-        (None, Some(_)) => (Tone::Error, "disconnected".to_string()),
-        (None, None) if app.cluster.loading => (Tone::Accent, "connecting…".to_string()),
-        (None, None) => (Tone::Neutral, "disconnected".to_string()),
+        (None, Some(_)) => (components::DOT_HOLLOW, "disconnected".to_string(), Tone::Error),
+        (None, None) if app.cluster.loading => (
+            components::DOT_HOLLOW,
+            "connecting…".to_string(),
+            Tone::Accent,
+        ),
+        (None, None) => (
+            components::DOT_HOLLOW,
+            "disconnected".to_string(),
+            Tone::Neutral,
+        ),
     };
-
     let workers = app
         .cluster
         .data
@@ -119,70 +149,150 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         .map(|c| c.workers.len())
         .unwrap_or(0);
     let worker_word = if workers == 1 { "worker" } else { "workers" };
-    let dot_span = if app.cluster.data.is_none() && app.cluster.error.is_none() {
-        Span::styled(components::DOT_HOLLOW, Style::default().fg(Tone::Neutral.color()))
-    } else {
-        components::dot(dot_tone)
-    };
-    let full_middle = vec![
-        dot_span.clone(),
-        Span::styled(format!(" {cluster_text}"), Style::default().fg(th::MUTED)),
-        Span::styled("   ·   ", Style::default().fg(th::BORDER)),
-        Span::styled(
-            format!("{workers} {worker_word}"),
-            Style::default().fg(th::MUTED),
-        ),
-        Span::styled("   ·   ", Style::default().fg(th::BORDER)),
-        Span::styled(
-            format!("↻{}s", app.refresh_countdown_secs()),
-            Style::default().fg(th::MUTED),
-        ),
-    ];
-    // Compact form when the full cluster line cannot fit next to the identity.
-    let compact_middle = vec![
-        dot_span,
-        Span::styled(format!(" {cluster_text}"), Style::default().fg(th::MUTED)),
-    ];
+    let badge = format!(
+        "{dot_glyph} {cluster_text} · {workers} {worker_word} · ↻{}s",
+        app.refresh_countdown_secs()
+    );
 
-    let right = vec![
-        Span::styled("1-8", Style::default().fg(th::ACCENT_DIM)),
-        Span::styled(" switch ", Style::default().fg(th::MUTED)),
-        Span::styled("·", Style::default().fg(th::BORDER)),
-        Span::styled(" :", Style::default().fg(th::ACCENT_DIM)),
-        Span::styled(" command ", Style::default().fg(th::MUTED)),
-    ];
+    let hints = "1-8 switch  ·  : command";
+    let hints_w = hints.chars().count() as u16;
+    let badge_w = components::pill_width(&badge);
+    let pill_x = (identity_w as u16).saturating_add(2);
 
-    let width_of = |spans: &[Span]| -> usize { spans.iter().map(|s| s.content.chars().count()).sum() };
-    let left_w = width_of(&left);
-    let full_w = width_of(&full_middle);
-    let compact_w = width_of(&compact_middle);
-    let right_w = width_of(&right);
-    let inner = area.width as usize;
-
-    let mut line: Vec<Span> = left;
-    // Keep at least two cells between the cluster line and the shortcut hint;
-    // without an explicit gap the timer visually merges into "1-8".
-    let gap = 2usize;
-    if inner >= left_w + full_w + right_w + gap {
-        line.push(Span::raw(" ".repeat(
-            inner - left_w - full_w - right_w - gap,
-        )));
-        line.extend(full_middle);
-        line.push(Span::raw("  "));
-        line.extend(right);
-    } else if inner >= left_w + compact_w + right_w + gap {
-        line.push(Span::raw(" ".repeat(
-            inner - left_w - compact_w - right_w - gap,
-        )));
-        line.extend(compact_middle);
-        line.push(Span::raw("  "));
-        line.extend(right);
-    } else if inner >= left_w + 2 + compact_w {
-        line.push(Span::raw("  "));
-        line.extend(compact_middle);
+    let hints_fit =
+        area.width > hints_w && area.right().saturating_sub(hints_w) > pill_x + badge_w + 1;
+    if hints_fit {
+        f.render_widget(
+            Paragraph::new(Span::styled(hints, Style::default().fg(th::MUTED))),
+            Rect {
+                x: area.right() - hints_w,
+                width: hints_w,
+                ..mid
+            },
+        );
     }
 
-    f.render_widget(Paragraph::new(Line::from(line)), area);
+    if pill_x + badge_w <= area.width {
+        components::pill(
+            f,
+            Rect {
+                x: pill_x,
+                width: badge_w,
+                ..area
+            },
+            badge,
+            tone,
+        );
+    }
+}
+
+/// The footer merges the status row and the key hints: the status is a pill on
+/// the left (its tone carries the fade), the contextual hints stay plain on the
+/// right so a long hint list never turns into a giant box.
+fn render_footer(f: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let mid = Rect {
+        y: area.y + area.height.saturating_sub(1) / 2,
+        height: 1,
+        ..area
+    };
+    let hints = footer_hints(app);
+    let hints_w = hints.chars().count() as u16;
+    let hints_fit = area.width > hints_w + 8;
+    if hints_fit {
+        f.render_widget(
+            Paragraph::new(Span::styled(hints, Style::default().fg(th::MUTED))),
+            Rect {
+                x: area.right() - hints_w,
+                width: hints_w,
+                ..mid
+            },
+        );
+    }
+
+    if app.mode == InputMode::Command {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(" :", Style::default().fg(th::ACCENT)),
+                Span::raw(app.command.clone()),
+                Span::styled("▏", Style::default().fg(th::ACCENT)),
+            ])),
+            Rect {
+                width: if hints_fit {
+                    area.right().saturating_sub(hints_w + 2)
+                } else {
+                    area.width
+                },
+                ..mid
+            },
+        );
+        return;
+    }
+    if app.mode == InputMode::Filter {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(" /", Style::default().fg(th::ACCENT)),
+                Span::raw(app.files.filter.clone()),
+                Span::styled("▏", Style::default().fg(th::ACCENT)),
+            ])),
+            Rect {
+                width: if hints_fit {
+                    area.right().saturating_sub(hints_w + 2)
+                } else {
+                    area.width
+                },
+                ..mid
+            },
+        );
+        return;
+    }
+
+    let (text, color) = status_pill(app);
+    let max_w = if hints_fit {
+        area.right().saturating_sub(hints_w + 2)
+    } else {
+        area.width
+    };
+    // Keep the pill inside the band even when the message is long.
+    let max_chars = max_w.saturating_sub(4) as usize;
+    let text: String = if text.chars().count() > max_chars {
+        let mut clipped: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+        clipped.push('…');
+        clipped
+    } else {
+        text
+    };
+    components::pill_colored(
+        f,
+        Rect {
+            width: components::pill_width(&text).min(max_w),
+            ..area
+        },
+        text,
+        color,
+    );
+}
+
+/// Status text and the colour that carries its fade. A pill's border and text
+/// use the same interpolated colour, so the message dims smoothly instead of
+/// switching palette entries.
+fn status_pill(app: &App) -> (String, ratatui::style::Color) {
+    let alpha = app.anim.status_alpha();
+    let faded = |c: ratatui::style::Color| crate::anim::lerp_color(th::MUTED, c, alpha);
+    if app.status_is_error {
+        (app.status.clone(), faded(th::ERROR))
+    } else if app.status.is_empty() {
+        let masters = if app.cfg.master_addrs.is_empty() {
+            "no masters configured — pass --master-addrs or --conf".to_string()
+        } else {
+            format!("masters: {}", app.cfg.master_addrs.join(", "))
+        };
+        (masters, th::MUTED)
+    } else {
+        (app.status.clone(), faded(th::OK))
+    }
 }
 
 /// Command-line suggestions: the input itself lives in the footer, so this row
@@ -220,64 +330,6 @@ fn render_command_hint(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-/// The footer merges the old status row and key-hint row: message on the left,
-/// contextual keys on the right. It has no border, matching the header.
-fn render_footer(f: &mut Frame, app: &App, area: Rect) {
-    let (left_text, left_style) = if app.mode == InputMode::Command {
-        (
-            format!(" :{}▏", app.command),
-            Style::default().fg(th::TEXT),
-        )
-    } else if app.mode == InputMode::Filter {
-        (
-            format!(" /{}▏", app.files.filter),
-            Style::default().fg(th::TEXT),
-        )
-    } else {
-        status_text(app)
-    };
-    let hints = footer_hints(app);
-
-    let width = area.width as usize;
-    let right_w = hints.chars().count();
-    let show_right = right_w < width;
-    let mut line = Vec::new();
-
-    if !show_right {
-        // At very narrow widths the contextual keys are still more useful
-        // than a status line, so clip the hints instead of dropping them.
-        let text: String = hints.chars().take(width).collect();
-        line.push(Span::styled(text, Style::default().fg(th::MUTED)));
-    } else {
-        let available = width.saturating_sub(right_w + 1);
-        let text: String = left_text.chars().take(available).collect();
-        line.push(Span::styled(text, left_style));
-        let used = line.iter().map(|s: &Span| s.content.chars().count()).sum::<usize>();
-        line.push(Span::raw(" ".repeat(width.saturating_sub(used + right_w))));
-        line.push(Span::styled(hints, Style::default().fg(th::MUTED)));
-    }
-
-    f.render_widget(Paragraph::new(Line::from(line)), area);
-}
-
-/// Status message with the existing fade, or the configured masters when idle.
-fn status_text(app: &App) -> (String, Style) {
-    let alpha = app.anim.status_alpha();
-    let faded = |c: ratatui::style::Color| crate::anim::lerp_color(th::MUTED, c, alpha);
-    if app.status_is_error {
-        (format!(" {}", app.status), Style::default().fg(faded(th::ERROR)))
-    } else if app.status.is_empty() {
-        let masters = if app.cfg.master_addrs.is_empty() {
-            " no masters configured — pass --master-addrs or --conf".to_string()
-        } else {
-            format!(" masters: {}", app.cfg.master_addrs.join(", "))
-        };
-        (masters, Style::default().fg(th::MUTED))
-    } else {
-        (format!(" {}", app.status), Style::default().fg(faded(th::OK)))
-    }
 }
 
 /// Contextual key hints for the footer's right edge.

@@ -162,3 +162,45 @@ lazygit 的灵魂。任何面板按 `x` 打开上下文操作菜单（除 Files 
 - `d` 打开整屏详情，`Esc` 返回
 - `:` 输入 `ls` 时出现补全行，`Tab` 完成，`↑` 能翻历史
 - clippy 零警告、全部测试绿
+
+## 10. 追加规范：状态标签一律改为圆角 pill（v3）
+
+> 本轮追加，覆盖 §0 的"标签样式"约束；布局、按键与数据流不变。此前的
+> `Tag::solid`（文字 + 实心背景 = 直角块）全部废弃。
+
+### 10.1 技术现实
+
+- `Span` 只能画前景色，画不出圆角背景；实心背景必然是直角矩形。
+- 表格 `Cell` 无法嵌套 `Block`，所以单元格里永远不能出现 pill。
+- ratatui 的 `Gauge` 会把 label 反色成"文字压在实心块上"，同样不符合规范。
+
+### 10.2 实现
+
+- `src/ui/components.rs`：
+  - 删除 `Tag::solid` 与 `Tag.solid` 字段；`Tag` 只保留文字/描边形态。
+  - 新增 `pill(f, area, text, tone) -> Rect`：`Block::bordered()` +
+    `BorderType::Rounded`，内容单行，占用 3 行（上边框 / 内容 / 下边框）。
+  - 新增 `pill_colored`（显式颜色，供状态淡出插值）、`pill_content`（返回
+    `Line` 的内容变体）、`pills` / `pills_end`（一行多个 pill 的左对齐/右对齐
+    排版）。各面板只调用这些 helper，禁止自行拼边框字符。
+  - 区域高度 < 3 时退化为彩色文字，绝不退回实心块。
+- 独立徽章改为 pill：header 的集群状态、footer 的状态消息、Files 面包屑与
+  选中信息条、Nodes 头部与选中条、Mounts 选中条、Bench 旋钮与运行状态、
+  dialog 的标题徽章与按键 keycap、帮助弹窗的 "N panels"。
+- 表格内：只用彩色文字与圆点（`●`/`○`），不使用任何背景色。
+- 进度条改为块字符 + 居中标签（`render_bar_block`），不再使用 `Gauge` 的
+  反色 label。
+- 行选中高亮（`SELECTED_BG`）保留：它是整行选择态，不是标签。
+
+### 10.3 布局影响
+
+pill 需要 3 行高，因此以下带状区域从 1 行变为 3 行，内容居中于中间行，
+其余部分仍无边框：header、footer、Files 面包屑、Files/Nodes/Mounts 选中条。
+主区域仍占据全部剩余空间。
+
+### 10.4 验证
+
+- 渲染测试断言徽章四周出现 `╭ ╮ ╰ ╯`（`assert_pill_around`）。
+- 全屏 buffer 扫描：除 `SELECTED_BG` 的整行选中外，不存在任何非 `Reset`
+  背景色（`no_filled_tag_backgrounds_remain`）。
+- 代码层：`Tag::solid` 已无定义、无调用点。

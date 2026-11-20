@@ -288,8 +288,12 @@ fn live_header_files_and_menus_work_against_the_cluster() {
     );
 
     // Header: identity, cluster endpoint, live worker count, refresh timer.
+    // The band is three rows; the content sits on its middle row.
     let out = live.render(120, 30);
-    let header = out.lines().next().unwrap_or_default();
+    let header = out
+        .lines()
+        .find(|l| l.contains("curvine-tui"))
+        .unwrap_or_default();
     assert!(header.contains("curvine-tui"), "header: {header:?}");
     assert!(header.contains("worker"), "header: {header:?}");
     assert!(header.contains('↻'), "header: {header:?}");
@@ -297,11 +301,11 @@ fn live_header_files_and_menus_work_against_the_cluster() {
         header.contains(crate::ui::components::DOT),
         "header health dot missing: {header:?}"
     );
-    let footer = out.lines().last().unwrap_or_default();
-    assert!(
-        footer.contains("x menu") || footer.contains("x"),
-        "footer hints: {footer:?}"
-    );
+    let footer = out
+        .lines()
+        .find(|l| l.contains("x menu"))
+        .unwrap_or_default();
+    assert!(!footer.is_empty(), "footer hints missing:\n{out}");
 
     // Browse a directory this test created itself.
     let (root, remote) = seed(&live, "header", 64 * 1024);
@@ -318,8 +322,11 @@ fn live_header_files_and_menus_work_against_the_cluster() {
     assert!(out.contains(&root), "breadcrumb path missing:\n{out}");
     assert!(out.contains(&name), "seeded file missing:\n{out}");
     assert!(out.contains("repl"), "replica column missing:\n{out}");
-    let crumb = out.lines().nth(1).unwrap_or_default();
-    assert!(crumb.contains("1/1"), "visible/total missing: {crumb:?}");
+    let crumb = out
+        .lines()
+        .find(|l| l.contains("1/1"))
+        .unwrap_or_default();
+    assert!(crumb.contains("1/1"), "visible/total missing:\n{out}");
 
     // Every panel opens a menu with at least one executable action.
     for panel in Panel::ALL {

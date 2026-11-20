@@ -49,46 +49,43 @@ fn render_verdict(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let (line, tone) = if app.fsck.loading {
+    // Non-gauge states carry a badge, so they use a pill plus plain text.
+    let (badge, tone, detail) = if app.fsck.loading {
         (
-            Line::from(vec![
-                Span::styled(
-                    format!(" {} ", components::live_spinner()),
-                    Style::default().fg(th::ACCENT),
-                ),
-                Span::styled(
-                    format!("scanning {} … press x to cancel", app.fsck_path),
-                    Style::default().fg(th::MUTED),
-                ),
-            ]),
-            Tone::Neutral,
+            format!("{} scanning", components::live_spinner()),
+            Tone::Accent,
+            "press x to cancel".to_string(),
         )
     } else if let Some(err) = &app.fsck.error {
-        (
-            Line::from(vec![
-                Tag::solid("failed", Tone::Error).span(),
-                Span::styled(format!(" {err}"), Style::default().fg(th::ERROR)),
-            ]),
-            Tone::Error,
-        )
+        ("failed".to_string(), Tone::Error, err.clone())
     } else {
         (
-            Line::from(vec![
-                Tag::new("idle", Tone::Neutral).span(),
-                Span::styled(
-                    " press enter to scan · f targets the browsed directory",
-                    Style::default().fg(th::MUTED),
-                ),
-            ]),
+            "idle".to_string(),
             Tone::Neutral,
+            "press enter to scan · f targets the browsed directory".to_string(),
         )
     };
-    let _ = tone;
-
-    f.render_widget(
-        Paragraph::new(line).block(components::panel_block(&format!("fsck {}", app.fsck_path))),
-        area,
+    let pill_rect = components::pill(
+        f,
+        Rect {
+            x: area.x + 1,
+            width: area.width.saturating_sub(2),
+            ..area
+        },
+        badge,
+        tone,
     );
+    if area.height >= 3 {
+        f.render_widget(
+            Paragraph::new(Span::styled(detail, Style::default().fg(th::MUTED))),
+            Rect {
+                x: pill_rect.right().saturating_add(2),
+                y: area.y + 1,
+                width: area.right().saturating_sub(pill_rect.right() + 2),
+                height: 1,
+            },
+        );
+    }
 }
 
 fn render_summary(f: &mut Frame, app: &App, area: Rect) {

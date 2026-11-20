@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Gauge, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
 
@@ -73,12 +73,15 @@ impl Tone {
     }
 }
 
+/// Inline label: coloured bold text with one cell of breathing room.
+///
+/// There is deliberately no filled variant. A solid background can only be
+/// rectangular, and this UI draws every badge as a rounded pill instead; see
+/// [`pill`]. Table cells use [`Tag::cell`], which never carries a background.
 #[derive(Debug, Clone)]
 pub struct Tag {
     pub text: String,
     pub tone: Tone,
-    /// Render with a filled background instead of just coloured text.
-    pub solid: bool,
 }
 
 impl Tag {
@@ -86,46 +89,137 @@ impl Tag {
         Self {
             text: text.into(),
             tone,
-            solid: false,
-        }
-    }
-
-    pub fn solid(text: impl Into<String>, tone: Tone) -> Self {
-        Self {
-            text: text.into(),
-            tone,
-            solid: true,
         }
     }
 
     pub fn span(&self) -> Span<'static> {
-        let color = self.tone.color();
-        let style = if self.solid {
+        Span::styled(
+            format!(" {} ", self.text),
             Style::default()
-                .fg(Color::Rgb(16, 18, 22))
-                .bg(color)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(color).add_modifier(Modifier::BOLD)
-        };
-        Span::styled(format!(" {} ", self.text), style)
+                .fg(self.tone.color())
+                .add_modifier(Modifier::BOLD),
+        )
     }
 
     /// Same as `span` but without leading/trailing padding, for table cells.
     pub fn cell(&self) -> Span<'static> {
-        let color = self.tone.color();
-        let style = if self.solid {
-            Style::default().fg(Color::Rgb(16, 18, 22)).bg(color)
-        } else {
-            Style::default().fg(color)
-        };
-        Span::styled(self.text.clone(), style)
+        Span::styled(self.text.clone(), Style::default().fg(self.tone.color()))
     }
 
     #[allow(dead_code)]
     pub fn width(&self) -> usize {
-        self.text.chars().count() + if self.solid { 0 } else { 2 }
+        self.text.chars().count() + 2
     }
+}
+
+// ---------------------------------------------------------------------- pills
+
+/// Width a pill needs: two rounded borders plus one cell of padding each side.
+pub fn pill_width(text: &str) -> u16 {
+    text.chars().count() as u16 + 4
+}
+
+/// Total width of a row of pills, including the single-cell gaps.
+pub fn pills_width(items: &[(String, Tone)]) -> u16 {
+    let inner: u16 = items.iter().map(|(t, _)| pill_width(t)).sum();
+    inner + items.len().saturating_sub(1) as u16
+}
+
+/// The styled content line a pill carries. This is the `Line`-returning
+/// variant: [`pill`] wraps it in the rounded border, and callers that need to
+/// compose a badge row by hand can reuse exactly the same content style.
+#[allow(dead_code)] // documented Line-returning API for composing badge rows
+pub fn pill_content(text: impl Into<String>, tone: Tone) -> Line<'static> {
+    pill_content_colored(text, tone.color())
+}
+
+/// Colour-explicit variant of [`pill_content`], used by the status pill so its
+/// border and text can fade smoothly instead of snapping between tones.
+pub fn pill_content_colored(text: impl Into<String>, color: Color) -> Line<'static> {
+    Line::from(Span::styled(
+        format!(" {} ", text.into()),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    ))
+}
+
+/// Draw a rounded badge ("pill") filling `area`.
+///
+/// A one-line rounded box needs three rows: top border, content, bottom border.
+/// When `area` is shorter than that (pathological terminals), the same content
+/// is drawn as plain coloured text so a badge can never degrade into the solid
+/// rectangular block this style exists to remove.
+pub fn pill(f: &mut Frame, area: Rect, text: impl Into<String>, tone: Tone) -> Rect {
+    pill_colored(f, area, text, tone.color())
+}
+
+/// [`pill`] with an explicit colour, so animated borders (the status fade) can
+/// interpolate instead of switching palette entries.
+pub fn pill_colored(f: &mut Frame, area: Rect, text: impl Into<String>, color: Color) -> Rect {
+    let text = text.into();
+    let width = pill_width(&text).min(area.width);
+    let rect = Rect {
+        x: area.x,
+        y: area.y,
+        width,
+        height: area.height.min(3),
+    };
+    if rect.width < 3 || rect.height == 0 {
+        return rect;
+    }
+    if rect.height < 3 {
+        f.render_widget(
+            Paragraph::new(pill_content_colored(text, color)),
+            Rect {
+                height: 1,
+                ..rect
+            },
+        );
+        return rect;
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(color));
+    f.render_widget(
+        Paragraph::new(pill_content_colored(text, color)).block(block),
+        rect,
+    );
+    rect
+}
+
+/// Render pills left to right inside `area`, one cell apart. Returns the x
+/// coordinate just past the last pill (or `area.right()` when clipped).
+pub fn pills(f: &mut Frame, area: Rect, items: &[(String, Tone)]) -> u16 {
+    let mut x = area.x;
+    for (text, tone) in items {
+        if x >= area.right() {
+            break;
+        }
+        let slot = Rect {
+            x,
+            y: area.y,
+            width: area.right().saturating_sub(x),
+            height: area.height,
+        };
+        let used = pill(f, slot, text.clone(), *tone);
+        x = used.right().saturating_add(1);
+    }
+    x
+}
+
+/// Right-align a row of pills within `area`.
+pub fn pills_end(f: &mut Frame, area: Rect, items: &[(String, Tone)]) -> u16 {
+    let total = pills_width(items);
+    let start = area.right().saturating_sub(total).max(area.x);
+    pills(
+        f,
+        Rect {
+            x: start,
+            width: area.right().saturating_sub(start),
+            ..area
+        },
+        items,
+    )
 }
 
 /// Map an arbitrary status string onto a tone. `Tag` and the status dots share
@@ -241,17 +335,48 @@ pub fn render_usage(
     text: String,
     tone: Tone,
 ) {
-    let g = Gauge::default()
-        .block(panel_block(label))
-        .gauge_style(
-            Style::default()
-                .fg(tone.color())
-                .bg(Color::Reset)
-                .add_modifier(Modifier::BOLD),
-        )
-        .ratio(ratio.clamp(0.0, 1.0))
-        .label(Span::styled(text, Style::default().fg(th::TEXT)));
-    f.render_widget(g, area);
+    render_bar_block(f, area, label, ratio, text, tone);
+}
+
+/// A bordered bar with a centred label drawn over it.
+///
+/// Deliberately not `Gauge`: ratatui inverts a gauge label into a filled block,
+/// and a filled block is exactly the solid rectangle this design removes. The
+/// bar is drawn with block characters, so the label sits on plain background.
+pub fn render_bar_block(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    ratio: f64,
+    text: String,
+    tone: Tone,
+) {
+    let block = panel_block(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+    let mid = Rect {
+        y: inner.y + inner.height / 2,
+        height: 1,
+        ..inner
+    };
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            bar(ratio.clamp(0.0, 1.0), inner.width as usize),
+            Style::default().fg(tone.color()),
+        )),
+        mid,
+    );
+    // Pad so the label never runs straight into the bar glyphs.
+    let padded = format!(" {text} ");
+    let text: String = padded.chars().take(inner.width as usize).collect();
+    f.render_widget(
+        Paragraph::new(Span::styled(text, Style::default().fg(th::TEXT)))
+            .alignment(Alignment::Center),
+        mid,
+    );
 }
 
 // ------------------------------------------------------------------- key/value
@@ -395,6 +520,46 @@ pub fn choice_line(label: &str, value: &str, focused: bool) -> Line<'static> {
 pub fn render_help_popup(f: &mut Frame, area: Rect) {
     let rect = centered_rect(66, 88, area);
     f.render_widget(Clear, rect);
+    let block = panel_block("Help");
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    // Title and the panel-count pill share one three-row band; the pill is the
+    // badge, the product name stays plain text beside it.
+    let band_h = inner.height.min(3);
+    let band = Rect {
+        height: band_h,
+        ..inner
+    };
+    let pill_rect = pill(
+        f,
+        Rect {
+            x: inner.x + 1,
+            width: inner.width.saturating_sub(1),
+            ..band
+        },
+        format!("{} panels", crate::app::Panel::ALL.len()),
+        Tone::Accent,
+    );
+    if band_h >= 3 {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "❖ curvine-tui",
+                    Style::default()
+                        .fg(th::ACCENT)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("  contextual actions", Style::default().fg(th::MUTED)),
+            ])),
+            Rect {
+                x: pill_rect.right().saturating_add(1),
+                y: band.y + 1,
+                width: inner.right().saturating_sub(pill_rect.right() + 1),
+                height: 1,
+            },
+        );
+    }
 
     let rows: Vec<(&str, &str)> = vec![
         ("x", "open the contextual action menu"),
@@ -422,23 +587,7 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
         ("q / ctrl-c", "quit"),
     ];
 
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(
-                " curvine-tui ",
-                Style::default()
-                    .fg(th::ACCENT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Tag::solid(
-                format!("{} panels", crate::app::Panel::ALL.len()),
-                Tone::Accent,
-            )
-            .span(),
-        ]),
-        Line::from(""),
-        section("status dots"),
-    ];
+    let mut lines: Vec<Line> = vec![section("status dots")];
 
     // Legend: the dot colours are the health vocabulary, so spell them out once.
     let legend = [
@@ -452,10 +601,7 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
         lines.push(Line::from(vec![
             Span::raw("  "),
             dot(tone),
-            Span::styled(
-                format!("  {meaning}"),
-                Style::default().fg(th::MUTED),
-            ),
+            Span::styled(format!("  {meaning}"), Style::default().fg(th::MUTED)),
         ]));
     }
     lines.push(Line::from(""));
@@ -468,13 +614,17 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
         ]));
     }
 
-    let p = Paragraph::new(lines)
-        .block(panel_block("Help"))
-        .wrap(Wrap { trim: false })
-        .alignment(Alignment::Left);
-    f.render_widget(p, rect);
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .alignment(Alignment::Left),
+        Rect {
+            y: inner.y + band_h,
+            height: inner.height.saturating_sub(band_h),
+            ..inner
+        },
+    );
 }
-
 
 // ------------------------------------------------------------------ dialogs
 
@@ -552,7 +702,7 @@ impl Dialog {
             .max()
             .unwrap_or(0);
         let content = (label_w + value_w + 6)
-            .max(headline_w + 4)
+            .max(headline_w + 8)
             .max(note_w + 4)
             .max(section_w + 4)
             .max(self.title.chars().count() + 8)
@@ -564,19 +714,21 @@ impl Dialog {
     /// here silently clips the confirm footer — which is the one line the user
     /// has to read before a destructive action.
     pub fn preferred_height(&self) -> u16 {
-        let mut h = 2; // top + bottom border
-        h += 1; // leading blank
-        if self.headline.is_some() {
-            h += 2; // headline + trailing blank
-        }
-        h += self.rows.len() as u16;
+        let mut body = 1; // leading blank
+        body += self.rows.len() as u16;
         for (_, lines) in &self.sections {
-            h += 2; // blank + section title
-            h += lines.len() as u16;
+            body += 2; // blank + section title
+            body += lines.len() as u16;
         }
-        h += self.notes.len() as u16 * 2; // blank + note
-        h += 2; // blank + footer
-        h.max(8)
+        body += self.notes.len() as u16 * 2; // blank + note
+        let mut h = 2; // top + bottom border
+        if self.headline.is_some() {
+            h += 3; // rounded pill band
+        }
+        h += body;
+        h += 1; // gap above the footer
+        h += 3; // footer pills
+        h.max(11)
     }
 }
 
@@ -594,17 +746,49 @@ pub fn render_dialog(f: &mut Frame, area: Rect, dlg: &Dialog) -> Rect {
     let rect = centre(width, height, area);
     f.render_widget(Clear, rect);
 
-    let mut lines: Vec<Line> = vec![Line::from("")];
+    let accent = if dlg.destructive { th::ERROR } else { th::ACCENT };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(accent))
+        .title(Span::styled(
+            format!(" {} ", dlg.title),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
 
+    let split = ratatui::layout::Layout::default()
+        .direction(ratatui::layout::Direction::Vertical)
+        .constraints([
+            ratatui::layout::Constraint::Length(if dlg.headline.is_some() { 3 } else { 0 }),
+            ratatui::layout::Constraint::Min(1),
+            ratatui::layout::Constraint::Length(1),
+            ratatui::layout::Constraint::Length(3),
+        ])
+        .split(inner);
+
+    // Headline badge: a rounded pill, never a filled rectangle.
     if let Some((text, tone)) = &dlg.headline {
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Tag::solid(text.clone(), *tone).span(),
-        ]));
-        lines.push(Line::from(""));
+        pill(
+            f,
+            Rect {
+                x: inner.x + 1,
+                width: inner.width.saturating_sub(2),
+                ..split[0]
+            },
+            text.clone(),
+            *tone,
+        );
     }
 
-    let label_w = dlg.rows.iter().map(|(l, _)| l.chars().count()).max().unwrap_or(0);
+    let mut lines: Vec<Line> = vec![Line::from("")];
+    let label_w = dlg
+        .rows
+        .iter()
+        .map(|(l, _)| l.chars().count())
+        .max()
+        .unwrap_or(0);
     for (label, value) in &dlg.rows {
         lines.push(Line::from(vec![
             Span::styled(
@@ -629,40 +813,47 @@ pub fn render_dialog(f: &mut Frame, area: Rect, dlg: &Dialog) -> Rect {
         ]));
     }
 
-    lines.push(Line::from(""));
-    if dlg.destructive {
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Tag::solid("enter", Tone::Error).span(),
-            Span::styled(" confirm   ", Style::default().fg(th::MUTED)),
-            Tag::new("esc", Tone::Neutral).span(),
-            Span::styled(" cancel", Style::default().fg(th::MUTED)),
-        ]));
-    } else {
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Tag::new("esc", Tone::Neutral).span(),
-            Span::styled(" close", Style::default().fg(th::MUTED)),
-        ]));
-    }
-
-    let accent = if dlg.destructive { th::ERROR } else { th::ACCENT };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(accent))
-        .title(Span::styled(
-            format!(" {} ", dlg.title),
-            Style::default().fg(accent).add_modifier(Modifier::BOLD),
-        ));
-
     f.render_widget(
         Paragraph::new(lines)
-            .block(block)
             .wrap(Wrap { trim: false })
             .alignment(Alignment::Left),
-        rect,
+        split[1],
     );
+
+    // Footer keycaps are pills too; the labels between them stay plain so the
+    // row reads as one sentence.
+    let footer = split[3];
+    let mid = Rect {
+        y: footer.y + footer.height.saturating_sub(1) / 2,
+        height: 1,
+        ..footer
+    };
+    let mut x = inner.x + 2;
+    let keycaps: &[(&str, Tone, &str)] = if dlg.destructive {
+        &[("enter", Tone::Error, " confirm "), ("esc", Tone::Neutral, " cancel")]
+    } else {
+        &[("esc", Tone::Neutral, " close")]
+    };
+    for (key, tone, label) in keycaps {
+        let slot = Rect {
+            x,
+            y: footer.y,
+            width: footer.right().saturating_sub(x),
+            height: footer.height,
+        };
+        let used = pill(f, slot, *key, *tone);
+        x = used.right().saturating_add(1);
+        f.render_widget(
+            Paragraph::new(Span::styled(*label, Style::default().fg(th::MUTED))),
+            Rect {
+                x,
+                width: mid.right().saturating_sub(x),
+                ..mid
+            },
+        );
+        x += label.chars().count() as u16;
+    }
+
     rect
 }
 
