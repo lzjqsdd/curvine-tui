@@ -338,28 +338,29 @@ Panels share one widget vocabulary so the UI reads consistently:
 | Control | Usage |
 |---|---|
 | **Status dot** | health and state: `● healthy`, `● lost`, `○ n/a`. Colour comes from `tone_for_status`, so a state can never be green in one panel and grey in another. The help popup documents the palette. |
-| **Pill** | a rounded, one-line badge: cluster state in the header, the status message in the footer, panel strips, dialog keycaps and the help panel count. Draws `Block` + `BorderType::Rounded`, so it is three rows tall (top border, content, bottom border) and the content stays on the middle row. |
-| **Tag** | inline categorical text (mount mode, storage class, direction) — coloured text only, never a filled block. Table cells are text-only because a cell cannot nest a block. |
+| **Badge** | a one-line, text-height label: `◖ text ◗`. The half-circle caps are glyphs, not borders: foreground is the page colour and background is the tone, so the fill ends in rounded caps. The middle is ` text ` in dark ink on the same tone, bold. Used for the cluster state in the header, the footer status, panel strips, the Nodes live/block counters, dialog keycaps, the help panel count and badged panel titles. |
+| **Tag** | inline categorical text (mount mode, storage class, direction) — coloured text only, never a filled block. Table cells are text-only because a cell cannot host a badge's caps. |
 | **Bar** | eighth-block progress (`▏▎▍▌▋▊▉`) so short bars keep sub-cell precision; `bar_with_pct` adds a right-aligned percentage. |
 | **Bar block** | full-width capacity/health/progress meter in a bordered block, drawn with block characters and a centred label on plain background (no inverted/filled label). |
 | **KV line** | `label  value` with a muted label so values carry the weight. |
 | **Input / Choice / Toggle** | the three form control styles used by the mount and transfer forms. |
-| **Badged panel title** | `mounts — 3 entries  [2 stale]` — plain coloured text inside the border title, since a title line cannot host a pill. |
+| **Badged panel title** | `unhealthy files — 2 ◖ action needed ◗` — the badge lives inside the border title, which is a single line of text. |
 | **Rounded borders** | every panel and dialog uses `BorderType::Rounded`. |
 | **Nerd Font icons** | per-file-extension glyphs in the listing, per-panel glyphs in the context header, and the selected item's glyph in the action menu title. Purely decorative: nothing depends on them semantically. |
 | **Value formatting** | owner columns never render as a bare separator: an empty owner is `-`, and the paired form is `owner:group` with `-` for a missing half. The Nodes version column shows `release (7-char commit)` instead of the worker's full build string. |
 
 Every panel also reserves a bottom strip for selection detail or queue counters,
 so the same shape repeats across Files, Mounts, Transfers and Fsck. Header,
-footer and the selection strips are three-row bands: that is the smallest height
-that can host a rounded pill, and the rest of each band stays borderless.
+footer and the selection strips are single-row bands: a badge occupies exactly
+its text height, so no band reserves rows for borders.
 
-Nothing in the UI paints a solid rectangular background behind text. Row
-selection is the one exception (a full-row highlight), and status dots remain
-round by design. `Tag` has no filled variant at all, so a rectangular badge
-cannot creep back in.
+The only filled backgrounds in the UI are badge interiors and the full-row
+selection highlight. A badge's background is exactly as wide as `◖ text ◗` and
+stops at the caps, so it can never grow into the solid rectangle this style
+exists to remove. Status dots remain round by design, and `Tag` has no filled
+variant at all.
 
-The header is two groups: identity + cluster pill on the left, shortcut hint on
+The header is two groups: identity + cluster badge on the left, shortcut hint on
 the right, with empty space between. Empty tables are not left blank — Files
 says `empty directory` / `no matches`, Jobs says when session jobs will appear.
 A status message is capped at 45% of the footer width, so a long error can never

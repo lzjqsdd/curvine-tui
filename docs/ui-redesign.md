@@ -240,3 +240,36 @@ pill 需要 3 行高，因此以下带状区域从 1 行变为 3 行，内容居
 - `cargo test`：hermetic + `CURVINE_TUI_LIVE=1`（运行中的本地集群）全绿。
 - `cargo clippy --all-targets` 零警告。
 - README 键位表与 visual language 段落同步。
+
+## 12. 替换规范：内联圆角徽章（v4，覆盖 §10 的 pill）
+
+> 实机反馈：3 行高的圆角盒子仍然像“把标签装进盒子”。徽章必须是一行、
+> 正好文字高度、背景只覆盖文字，圆角由字形给出。
+
+### 12.1 技术做法
+
+徽章是 `◖ text ◗` 三个 span：
+
+- 左帽 `◖`（U+25D6）：前景 = 页面色 `th::PAGE`，背景 = 色调色。
+- 中间 ` text `（两侧各一个空格）：前景 = 深色墨水 `th::INK`，背景 = 色调色，加粗。
+- 右帽 `◗`（U+25D7）：同左帽。
+- 宽度仍为 `字符数 + 4`；`pill_width` / `pills_width` 保留。
+
+`src/ui/components.rs` 删除以 `Block` 实现的 `pill` / `pill_colored` /
+`pill_content` / `pill_content_colored`，新增 `badge(text, tone) -> Line`、
+`badge_colored(text, color) -> Line`、`badges` / `badges_end`（一行多个徽章
+的左/右对齐）。标题行需要徽章时直接把 `Line` 放进 `Block::title`。
+
+### 12.2 布局影响
+
+徽章只占 1 行，因此 header、footer、Files 面包屑与选中条、Nodes 头部与
+选中条、Mounts 选中条、Bench 旋钮行都收缩为 1 行；Fsck verdict 仍保留 3 行
+给 gauge，但非 gauge 状态徽章画在中间行。面板与弹窗边框仍为
+`BorderType::Rounded`。
+
+### 12.3 验证
+
+- 徽章测试断言 `◖ … ◗` 以及中间 span 的色调背景。
+- buffer 扫描：除整行选中 `SELECTED_BG` 外，每个非 `Reset` 背景必须是一段
+  以 `◖` 开头、`◗` 结尾的连续色调区间。
+- header / footer 各只占 1 行；footer 状态仍限制在 45% 宽度内并以 `…` 截断。
