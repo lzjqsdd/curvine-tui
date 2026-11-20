@@ -63,6 +63,26 @@ pub fn render(f: &mut Frame, app: &App) {
     }
     render_footer(f, app, chunks[3]);
 
+    // Error toast: bottom-centred, above the footer, floating over panel
+    // content. Drawn before dialogs so a blocking decision stays on top.
+    if let Some(toast) = &app.toast {
+        let height = 3.min(chunks[3].y);
+        if height > 0 {
+            components::render_toast(
+                f,
+                Rect {
+                    x: f.area().x,
+                    y: chunks[3].y.saturating_sub(height),
+                    width: f.area().width,
+                    height,
+                },
+                &toast.text,
+                toast.count,
+                app.anim.toast_alpha(),
+            );
+        }
+    }
+
     // Blocking dialogs sit above panel content and below help. The full-screen
     // detail view is a panel mode, not a dialog, and is rendered by its panel.
     if let Some(pending) = &app.confirm {
@@ -187,9 +207,10 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// The footer merges the status row and the key hints: the status is an inline
-/// badge on the left (its tone carries the fade), the contextual hints stay
-/// plain on the right so a long hint list never turns into a giant box.
+/// The footer merges the status row and the key hints: a success/info status is
+/// an inline badge on the left (its tone carries the fade), the contextual
+/// hints stay plain on the right so a long hint list never turns into a giant
+/// box. Errors never reach this row — they become a toast.
 fn render_footer(f: &mut Frame, app: &App, area: Rect) {
     if area.height == 0 {
         return;
@@ -256,8 +277,8 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
     } else {
         area.width
     };
-    // A long error must never push the hints off-screen: the status badge is
-    // capped at 45% of the band, and the message is clipped with an ellipsis.
+    // A long status must never push the hints off-screen: the badge is capped
+    // at 45% of the band, and the message is clipped with an ellipsis.
     let cap = ((area.width as u32 * 45) / 100) as u16;
     let max_w = available.min(cap.max(16));
     let max_chars = max_w.saturating_sub(4) as usize;
@@ -279,15 +300,11 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// Status text and the colour that carries its fade. The badge fill uses the
-/// interpolated colour, so the message dims smoothly instead of switching
-/// palette entries.
+/// Status text and the colour that carries its fade. Only success/info
+/// messages reach the footer; errors are rendered as a toast instead.
 fn status_badge(app: &App) -> (String, ratatui::style::Color) {
     let alpha = app.anim.status_alpha();
-    let faded = |c: ratatui::style::Color| crate::anim::lerp_color(th::MUTED, c, alpha);
-    if app.status_is_error {
-        (app.status.clone(), faded(th::ERROR))
-    } else if app.status.is_empty() {
+    if app.status.is_empty() {
         let masters = if app.cfg.master_addrs.is_empty() {
             "no masters configured — pass --master-addrs or --conf".to_string()
         } else {
@@ -295,7 +312,10 @@ fn status_badge(app: &App) -> (String, ratatui::style::Color) {
         };
         (masters, th::MUTED)
     } else {
-        (app.status.clone(), faded(th::OK))
+        (
+            app.status.clone(),
+            crate::anim::lerp_color(th::MUTED, th::OK, alpha),
+        )
     }
 }
 

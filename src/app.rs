@@ -497,7 +497,6 @@ pub struct App {
     pub should_quit: bool,
 
     pub status: String,
-    pub status_is_error: bool,
     /// The active error alert. Errors never enter the footer; they surface
     /// here as a bottom-centred toast that any input dismisses.
     pub toast: Option<Toast>,
@@ -569,7 +568,6 @@ impl App {
             command: String::new(),
             should_quit: false,
             status: String::new(),
-            status_is_error: false,
             toast: None,
             refresh_secs,
             next_refresh: Instant::now() + std::time::Duration::from_secs(refresh_secs),
@@ -655,12 +653,10 @@ impl App {
             // Errors belong to the toast; clearing keeps the footer from
             // showing a stale success message under the alert.
             self.status.clear();
-            self.status_is_error = false;
             return;
         }
 
         self.status = msg;
-        self.status_is_error = false;
         self.anim.mark_status();
     }
 
@@ -996,7 +992,6 @@ impl App {
 
         if self.anim.status_expired() {
             self.status.clear();
-            self.status_is_error = false;
             self.anim.clear_status_mark();
         }
         if self.anim.toast_expired() {

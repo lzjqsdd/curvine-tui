@@ -295,6 +295,20 @@ impl AnimState {
         self.toast_age = None;
     }
 
+    /// Opacity of the toast: 1.0 while held, then fading to 0. The fade uses
+    /// the same linear curve as the footer status, but its clock is the
+    /// frame-driven age rather than `Instant::now()`.
+    pub fn toast_alpha(&self) -> f64 {
+        let Some(age) = self.toast_age else {
+            return 1.0;
+        };
+        if age <= TOAST_HOLD {
+            return 1.0;
+        }
+        let faded = age - TOAST_HOLD;
+        (1.0 - faded.as_secs_f64() / TOAST_FADE.as_secs_f64()).clamp(0.0, 1.0)
+    }
+
     /// True once the toast has fully faded and should be dropped.
     pub fn toast_expired(&self) -> bool {
         self.toast_age

@@ -34,7 +34,6 @@ fn test_app() -> App {
         command: String::new(),
         should_quit: false,
         status: String::new(),
-        status_is_error: false,
         toast: None,
         refresh_secs: 5,
         next_refresh: std::time::Instant::now() + std::time::Duration::from_secs(5),
@@ -2186,7 +2185,6 @@ fn footer_status_badge_is_capped_and_keeps_hints_visible() {
     let mut app = test_app();
     app.panel = Panel::Files;
     populate_sample_data(&mut app);
-    app.status_is_error = true;
     app.status = "failed to read a very long remote path that goes on and on: /data/warehouse/part-0.bin (permission denied)".into();
     app.anim.mark_status();
 

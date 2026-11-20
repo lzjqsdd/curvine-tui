@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap},
     Frame,
 };
 
@@ -604,6 +604,78 @@ pub fn render_help_popup(f: &mut Frame, area: Rect) {
             height: inner.height.saturating_sub(band_h),
             ..inner
         },
+    );
+}
+
+// -------------------------------------------------------------------- toasts
+
+/// Render an error toast inside `area`.
+///
+/// The banner is bottom-aligned (callers pass the strip directly above the
+/// footer), horizontally centred, and never wider than 60% of the screen.
+/// `Clear` erases whatever the panel drew underneath so the one-line message
+/// stays legible, but the body keeps the terminal's default background: this
+/// is an alert banner, not a modal.
+pub fn render_toast(f: &mut Frame, area: Rect, text: &str, count: u32, alpha: f64) {
+    if area.width < 8 || area.height == 0 {
+        return;
+    }
+    // Wrapped RPC errors can carry newlines; the toast is one line.
+    let text = text.replace(['\n', '\r'], " ");
+
+    let prefix = format!("{} ", DOT);
+    let suffix = if count > 1 {
+        format!(" ×{count}")
+    } else {
+        String::new()
+    };
+    let fixed = prefix.chars().count() + suffix.chars().count();
+
+    // 60% of the screen is the hard cap; four cells cover the two borders and
+    // one cell of padding on each side.
+    let cap = ((area.width as u32 * 60) / 100).max(8) as u16;
+    let max_content = cap.saturating_sub(4) as usize;
+    let room = max_content.saturating_sub(fixed);
+    let mut body: String = text.chars().take(room).collect();
+    if body.chars().count() < text.chars().count() {
+        body = body
+            .chars()
+            .take(room.saturating_sub(1))
+            .chain(std::iter::once('…'))
+            .collect();
+    }
+    let content = format!("{prefix}{body}{suffix}");
+    let width = ((content.chars().count() as u16).saturating_add(4))
+        .min(cap)
+        .min(area.width);
+    let height = area.height.min(3);
+    let rect = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height),
+        width,
+        height,
+    };
+
+    f.render_widget(Clear, rect);
+
+    // Same fade curve as the footer status: the tone dims toward muted as the
+    // hold elapses, then the toast is dropped on expiry.
+    let color = crate::anim::lerp_color(th::MUTED, th::ERROR, alpha);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(color))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            content,
+            Style::default()
+                .fg(color)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        inner,
     );
 }
 
