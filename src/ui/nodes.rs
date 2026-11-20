@@ -22,7 +22,11 @@ use crate::app::App;
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(4), Constraint::Length(3)])
+        .constraints([
+            Constraint::Length(1), // health strip + block-count badge
+            Constraint::Min(4),
+            Constraint::Length(1), // selected worker: badge + plain metrics
+        ])
         .split(area);
 
     render_header(f, app, chunks[0]);

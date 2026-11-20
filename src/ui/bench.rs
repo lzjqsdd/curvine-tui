@@ -18,7 +18,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // knobs + state as inline badges
+            Constraint::Length(1), // knobs + state as inline badges
             Constraint::Min(4),    // results
         ])
         .split(area);
@@ -41,7 +41,7 @@ fn render_config(f: &mut Frame, app: &App, area: Rect) {
         .map(|d| format!("{}s", d / 1000))
         .unwrap_or_else(|| "∞".to_string());
 
-    // Knobs and run state are inline badges.
+    // Knobs and run state are inline badges on one text-height row.
     let state: (String, Tone) = if let Some(started) = app.bench_running {
         (
             format!("{} running {}s", components::live_spinner(), started.elapsed().as_secs()),

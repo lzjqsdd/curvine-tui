@@ -34,10 +34,10 @@ pub fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // header band (the cluster badge is inline)
+            Constraint::Length(1), // header: identity + inline cluster badge
             Constraint::Min(3),    // main area
             Constraint::Length(command_hint), // command completions
-            Constraint::Length(3), // footer band
+            Constraint::Length(1), // footer: status badge + hints
         ])
         .split(f.area());
 
@@ -79,7 +79,8 @@ pub fn render(f: &mut Frame, app: &App) {
 }
 
 /// Context header: identity + panel on the left, the cluster state as an
-/// inline badge, and navigation hints on the right.
+/// inline badge, and navigation hints on the right. It is a single row because
+/// a badge is exactly text-height.
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
     if area.height == 0 {
         return;
@@ -189,7 +190,6 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
 /// The footer merges the status row and the key hints: the status is an inline
 /// badge on the left (its tone carries the fade), the contextual hints stay
 /// plain on the right so a long hint list never turns into a giant box.
-/// The badge sits on the band's middle row.
 fn render_footer(f: &mut Frame, app: &App, area: Rect) {
     if area.height == 0 {
         return;

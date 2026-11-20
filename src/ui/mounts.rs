@@ -17,7 +17,7 @@ use crate::app::{App, MountForm};
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(5), Constraint::Length(3)])
+        .constraints([Constraint::Min(5), Constraint::Length(1)])
         .split(area);
 
     render_table(f, app, rows[0]);

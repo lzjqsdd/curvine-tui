@@ -21,9 +21,9 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // breadcrumb band
+            Constraint::Length(1), // breadcrumb: path + inline counters
             Constraint::Min(4),    // listing
-            Constraint::Length(3), // selected entry band
+            Constraint::Length(1), // selected entry: badge + plain metrics
         ])
         .split(area);
 
@@ -36,8 +36,8 @@ fn render_breadcrumb(f: &mut Frame, app: &App, area: Rect) {
     if area.height == 0 {
         return;
     }
-    // Status badges on the right, path on the left; both share the band's
-    // middle row, and `badges_end` leaves a gap between the groups.
+    // Status badges on the right, path on the left; both share the single row
+    // of the band, and `badges_end` leaves a gap between the groups.
     let mut right: Vec<(String, Tone)> = Vec::new();
     if !app.files.filter.is_empty() {
         right.push((format!("filter {}", app.files.filter), Tone::Warn));

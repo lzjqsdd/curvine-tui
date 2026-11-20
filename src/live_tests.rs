@@ -288,7 +288,7 @@ fn live_header_files_and_menus_work_against_the_cluster() {
     );
 
     // Header: identity, cluster endpoint, live worker count, refresh timer.
-    // The band is three rows; the content sits on its middle row.
+    // The band is a single row.
     let out = live.render(120, 30);
     let header = out
         .lines()
@@ -857,12 +857,12 @@ fn live_command_completion_history_and_panel_jumps() {
     };
     live.wait_cluster();
 
-    // Completion row (three rows above the bottom footer band) + Tab completes
+    // Completion row (directly above the bottom footer row) + Tab completes
     // the first prefix match.
     live.key(KeyCode::Char(':'));
     live.text("l");
     let screen = live.render(120, 30);
-    let hint = screen.lines().nth_back(3).unwrap_or_default();
+    let hint = screen.lines().nth_back(1).unwrap_or_default();
     assert!(hint.contains("match: ls"), "completion row: {hint:?}");
     live.key(KeyCode::Tab);
     assert_eq!(live.app.command, "ls ");

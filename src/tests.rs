@@ -566,9 +566,8 @@ fn umount_confirm_renders_target_path() {
 
 // --------------------------------------------------------------- new chrome
 
-/// First rendered row containing `needle`, or "" when absent. Chrome bands are
-/// taller than their content, so tests locate content by what it says, not by
-/// index.
+/// First rendered row containing `needle`, or "" when absent. Chrome is a
+/// single row now, but tests still locate content by what it says, not by index.
 fn srow<'a>(out: &'a str, needle: &str) -> &'a str {
     out.lines().find(|l| l.contains(needle)).unwrap_or_default()
 }
@@ -991,14 +990,9 @@ fn footer_merges_status_and_context_hints() {
     populate_sample_data(&mut app);
     app.set_status_for_test("saved 12 files");
     let out = render_app(&app, 120, 30);
-    // The same text also appears in the recent-events log, so look only in the
-    // three-row footer band.
-    let footer = out
-        .lines()
-        .rev()
-        .take(3)
-        .find(|l| l.contains("saved 12 files"))
-        .unwrap_or_default();
+    // The same text also appears in the recent-events log, so look only at the
+    // footer row itself.
+    let footer = out.lines().last().unwrap_or_default();
     assert!(footer.contains("saved 12 files"), "status missing from footer: {footer:?}");
     assert!(footer.contains("x menu"), "panel hints missing from footer: {footer:?}");
     // Status and hints share one row; the status is an inline badge.
@@ -1770,15 +1764,15 @@ fn command_completion_row_lists_matches_and_no_match_marker() {
     press(&mut app, crossterm::event::KeyCode::Char(':'));
     type_str(&mut app, "l");
     let out = render_app(&app, 110, 30);
-    let hint = out.lines().nth_back(3).unwrap_or_default();
-    let footer = out.lines().nth_back(1).unwrap_or_default();
+    let hint = out.lines().nth_back(1).unwrap_or_default();
+    let footer = out.lines().last().unwrap_or_default();
     assert!(hint.contains("ls"), "completion row missing ls: {hint:?}");
     assert!(hint.contains("load"), "completion row missing load: {hint:?}");
     assert!(footer.contains(":l"), "command input missing from footer: {footer:?}");
 
     type_str(&mut app, "zz");
     let out = render_app(&app, 110, 30);
-    let hint = out.lines().nth_back(3).unwrap_or_default();
+    let hint = out.lines().nth_back(1).unwrap_or_default();
     assert!(
         hint.contains("✗ no matching command"),
         "no-match marker missing: {hint:?}"
@@ -2094,6 +2088,27 @@ fn header_groups_title_and_cluster_badge_together() {
 }
 
 #[test]
+fn header_is_a_single_row() {
+    let mut app = test_app();
+    app.panel = Panel::Dashboard;
+    populate_sample_data(&mut app);
+    let out = render_app(&app, 120, 30);
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(
+        lines[0].contains("❖ curvine-tui") && lines[0].contains("1 worker"),
+        "header is not one row: {:?}",
+        lines[0]
+    );
+    assert!(lines[0].contains("1-8 switch"), "hints left the header row");
+    // The main area starts immediately on the next row: no empty band.
+    assert!(
+        lines[1].starts_with('╭'),
+        "main area must start on row 2: {:?}",
+        lines[1]
+    );
+}
+
+#[test]
 fn node_version_column_shows_release_and_short_commit() {
     assert_eq!(
         crate::ui::nodes::short_version("0.2.2 (commit: 23315882, branch: main)"),
@@ -2168,10 +2183,7 @@ fn footer_status_badge_is_capped_and_keeps_hints_visible() {
 
     let width = 120u16;
     let out = render_app(&app, width, 26);
-    let row = out
-        .lines()
-        .find(|l| l.contains('…'))
-        .expect("status should be truncated");
+    let row = out.lines().last().expect("footer row");
     assert!(row.contains('…'), "status should be truncated:\n{out}");
     let close = row
         .chars()
@@ -2186,6 +2198,27 @@ fn footer_status_badge_is_capped_and_keeps_hints_visible() {
     assert!(
         row.contains("x menu"),
         "hints pushed out by a long status:\n{out}"
+    );
+}
+
+#[test]
+fn footer_is_a_single_row() {
+    let mut app = test_app();
+    app.panel = Panel::Dashboard;
+    populate_sample_data(&mut app);
+    app.set_status_for_test("saved 12 files");
+    let out = render_app(&app, 120, 30);
+    let lines: Vec<&str> = out.lines().collect();
+    let footer = *lines.last().expect("footer row");
+    assert!(
+        footer.contains("◖ saved 12 files ◗"),
+        "status is not a one-line badge: {footer:?}"
+    );
+    assert!(footer.contains("x menu"), "hints missing from footer row");
+    // The row above is the bottom border of the main area, not a blank band.
+    assert!(
+        lines[lines.len() - 2].contains('╰') && lines[lines.len() - 2].contains('╯'),
+        "footer is more than one row:\n{out}"
     );
 }
 
@@ -2242,7 +2275,7 @@ fn completion_row_shows_the_first_three_candidates() {
     press(&mut app, crossterm::event::KeyCode::Char(':'));
     type_str(&mut app, "m");
     let out = render_app(&app, 110, 30);
-    let hint = out.lines().nth_back(3).unwrap_or_default();
+    let hint = out.lines().nth_back(1).unwrap_or_default();
     assert!(
         hint.contains("match: mkdir · mv · mount"),
         "completion row format wrong: {hint:?}"
